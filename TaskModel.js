@@ -33,8 +33,13 @@ function normalizedTask(raw) {
 }
 
 function normalizeTasks(tasks) {
-  if (!Array.isArray(tasks)) return []
-  return tasks.map(normalizedTask).filter(function(task) { return task.id })
+  if (!Array.isArray(tasks)) {
+    console.log("[TaskModel] normalizeTasks: input is not array:", typeof tasks)
+    return []
+  }
+  var result = tasks.map(normalizedTask).filter(function(task) { return task.id })
+  console.log("[TaskModel] normalizeTasks: input:", tasks.length, "output:", result.length)
+  return result
 }
 
 function isOverdue(task, now) {
@@ -60,8 +65,10 @@ function isCompleted(task) {
 function upcomingTasks(tasks, maxCount) {
   var limit = maxCount || 5
   var list = normalizeTasks(tasks)
-  return list
-    .filter(function(task) { return isPending(task) && !!task.due })
+  var pending = list.filter(function(task) { return isPending(task) })
+  var withDue = pending.filter(function(task) { return !!task.due })
+  console.log("[TaskModel] upcomingTasks: total:", list.length, "pending:", pending.length, "withDue:", withDue.length)
+  return withDue
     .sort(function(a, b) {
       var dueA = String(a.due || '')
       var dueB = String(b.due || '')
@@ -72,19 +79,21 @@ function upcomingTasks(tasks, maxCount) {
 
 function backlogTasks(tasks) {
   var list = normalizeTasks(tasks)
-  return list
+  var result = list
     .filter(function(task) { return isPending(task) && !task.due })
     .sort(function(a, b) {
       var createdA = String(a.created || '')
       var createdB = String(b.created || '')
       return createdB.localeCompare(createdA)
     })
+  console.log("[TaskModel] backlogTasks: total:", list.length, "result:", result.length)
+  return result
 }
 
 function doneTasks(tasks, maxCount) {
   var limit = maxCount || 10
   var list = normalizeTasks(tasks)
-  return list
+  var result = list
     .filter(function(task) { return isCompleted(task) })
     .sort(function(a, b) {
       var completedA = String(a.completed || '')
@@ -92,6 +101,8 @@ function doneTasks(tasks, maxCount) {
       return completedB.localeCompare(completedA)
     })
     .slice(0, limit)
+  console.log("[TaskModel] doneTasks: total:", list.length, "result:", result.length)
+  return result
 }
 
 function parseHelperResponse(text) {
