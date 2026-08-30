@@ -90,15 +90,63 @@ python3 -c 'from importlib.machinery import SourceFileLoader; import json, os, s
 from pathlib import Path
 mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
 folder = Path(tempfile.mkdtemp())
+plugin = "dev.enkeli.omadav"
+
+def load():
+    return json.loads(config.read_text())
+
+def write(data):
+    config.write_text(json.dumps(data))
+
 config = folder / "shell.json"
-config.write_text(json.dumps({"bar": {"centerAnchor": "omarchy.clock", "layout": {"center": [{"id": "sirwizardlizard.calendar"}]}}}))
 os.environ["OMARCHY_SHELL_CONFIG"] = str(config)
-result = mod.ensure_center_anchor("sirwizardlizard.calendar")
+
+write({"bar": {"centerAnchor": "omarchy.clock", "layout": {"center": [{"id": plugin}]}}})
+result = mod.ensure_center_anchor(plugin)
 assert result["changed"] is True
-assert json.loads(config.read_text())["bar"]["centerAnchor"] == "sirwizardlizard.calendar"
-again = mod.ensure_center_anchor("sirwizardlizard.calendar")
+assert load()["bar"]["centerAnchor"] == plugin
+again = mod.ensure_center_anchor(plugin)
 assert again["changed"] is False
-print("ok - helper center anchor")' "$ROOT/helper/omarchy-calendar-helper"
+print("ok - helper center anchor")
+
+write({"bar": {"centerAnchor": "omarchy.clock", "layout": {"center": [{"id": plugin}, {"id": "omarchy.clock", "format": "HH:mm"}]}}})
+result = mod.ensure_center_anchor(plugin)
+assert result["changed"] is True
+bar = load()["bar"]
+assert bar["centerAnchor"] == plugin
+assert [e["id"] for e in bar["layout"]["center"]] == [plugin]
+print("ok - helper drops default clock")
+
+write({"bar": {"centerAnchor": "omarchy.clock", "layout": {"center": [{"id": "omarchy.clock"}]}}})
+result = mod.ensure_center_anchor(plugin)
+assert result["changed"] is False
+bar = load()["bar"]
+assert bar["centerAnchor"] == "omarchy.clock"
+assert [e["id"] for e in bar["layout"]["center"]] == ["omarchy.clock"]
+print("ok - helper leaves clock when plugin is absent")
+
+write({"bar": {"centerAnchor": "sirwizardlizard.calendar", "layout": {"center": [{"id": plugin}]}}})
+result = mod.ensure_center_anchor(plugin)
+assert result["changed"] is True
+assert load()["bar"]["centerAnchor"] == plugin
+print("ok - helper retargets stale calendar pin")
+
+write({"bar": {"centerAnchor": "omarchy.weather", "layout": {"center": [{"id": plugin}, {"id": "omarchy.clock"}]}}})
+result = mod.ensure_center_anchor(plugin)
+assert result["changed"] is True
+bar = load()["bar"]
+assert bar["centerAnchor"] == "omarchy.weather"
+assert [e["id"] for e in bar["layout"]["center"]] == [plugin]
+print("ok - helper keeps custom pin while dropping clock")
+
+write({"bar": {"centerAnchor": "omarchy.clock", "layout": {"center": [{"id": plugin}], "right": [{"id": "omarchy.clock"}]}}})
+result = mod.ensure_center_anchor(plugin)
+assert result["changed"] is True
+bar = load()["bar"]
+assert bar["centerAnchor"] == plugin
+assert [e["id"] for e in bar["layout"]["center"]] == [plugin]
+assert bar["layout"]["right"] == []
+print("ok - helper drops clock in other sections")' "$ROOT/helper/omarchy-calendar-helper"
 
 python3 -c 'from importlib.machinery import SourceFileLoader; import json, os, sys, tempfile
 from pathlib import Path

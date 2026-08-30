@@ -1951,6 +1951,18 @@ def shell_config_path() -> Path:
     return Path(override) if override else Path.home() / ".config/omarchy/shell.json"
 
 
+def _bar_entry_id(entry) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("id") or "")
+    return str(entry or "")
+
+
+def _write_shell_config(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def ensure_center_anchor(plugin_id: str) -> dict:
     plugin_id = str(plugin_id or "").strip()
     path = shell_config_path()
@@ -1958,29 +1970,46 @@ def ensure_center_anchor(plugin_id: str) -> dict:
         return {"ok": True, "changed": False}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {"ok": True, "changed": False}
     bar = data.get("bar") if isinstance(data, dict) else None
     if not isinstance(bar, dict):
         return {"ok": True, "changed": False}
-    if str(bar.get("centerAnchor") or "") != "omarchy.clock":
+    layout = bar.get("layout")
+    if not isinstance(layout, dict):
         return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
-    center = ((bar.get("layout") or {}).get("center") or [])
-    ids = [str(entry.get("id") or "") if isinstance(entry, dict) else str(entry) for entry in center]
-    if plugin_id not in ids:
-        return {"ok": True, "changed": False, "centerAnchor": "omarchy.clock"}
-    text = path.read_text(encoding="utf-8")
-    updated = text.replace('"centerAnchor": "omarchy.clock"', f'"centerAnchor": "{plugin_id}"', 1)
-    if updated == text:
+
+    sections = ("left", "center", "right")
+    plugin_present = False
+    for section in sections:
+        entries = layout.get(section)
+        if isinstance(entries, list) and plugin_id in [_bar_entry_id(entry) for entry in entries]:
+            plugin_present = True
+            break
+    if not plugin_present:
+        return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
+
+    changed = False
+    for section in sections:
+        entries = layout.get(section)
+        if not isinstance(entries, list):
+            continue
+        kept = [entry for entry in entries if _bar_entry_id(entry) != "omarchy.clock"]
+        if len(kept) != len(entries):
+            layout[section] = kept
+            changed = True
+
+    stale_anchors = {"omarchy.clock", "sirwizardlizard.calendar"}
+    anchor = str(bar.get("centerAnchor") or "")
+    if anchor in stale_anchors:
         bar["centerAnchor"] = plugin_id
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
-    else:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(updated, encoding="utf-8")
-        tmp.replace(path)
-    return {"ok": True, "changed": True, "centerAnchor": plugin_id}
+        changed = True
+
+    if not changed:
+        return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
+
+    _write_shell_config(path, data)
+    return {"ok": True, "changed": True, "centerAnchor": str(bar.get("centerAnchor") or "")}
 
 
 def reminders_file() -> Path:
