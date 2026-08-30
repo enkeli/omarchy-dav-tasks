@@ -250,15 +250,9 @@ function daysForView(selectedKey, viewMode, weekStart) {
   if (viewMode === 'day') return [selected]
 
   var start = startOfWeek(selected, weekStart)
-  var count = viewMode === 'work-week' ? 5 : 7
   var days = []
-  for (var i = 0; i < count; i++) {
-    var day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)
-    if (viewMode === 'work-week' && (day.getDay() === 0 || day.getDay() === 6)) {
-      count += 1
-      continue
-    }
-    days.push(day)
+  for (var i = 0; i < 7; i++) {
+    days.push(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i))
   }
   return days
 }
