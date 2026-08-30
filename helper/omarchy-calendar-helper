@@ -445,7 +445,12 @@ def component_task(component, calendar: dict, modules: EdsModules | None = None,
         priority = int(component.get_priority() or 0)
     except (TypeError, ValueError):
         priority = 0
-    created, _created_all_day, _created_tz = component_datetime(component.get_dtstamp(), modules, client)
+    # dtstamp returns ICalGLib.Time directly, not a component datetime
+    dtstamp = component.get_dtstamp()
+    if dtstamp is not None and hasattr(dtstamp, "is_null_time") and not dtstamp.is_null_time():
+        created, _created_all_day = ical_time_iso(dtstamp, modules, client)
+    else:
+        created = ""
     return {
         "id": ":".join(part for part in [calendar["id"], uid] if part),
         "uid": uid,
