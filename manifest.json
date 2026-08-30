@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "sirwizardlizard.calendar",
-  "name": "CalDav Calendar",
+  "id": "dev.enkeli.omadav",
+  "name": "Omadav CalDAV Plugin",
   "version": "1.0.5",
-  "author": "sirwizardlizard",
+  "author": "dev.enkeli.omadav",
   "license": "MIT",
   "description": "Create events in the Omarchy clock and sync them to iPhone, Mac, and other CalDAV calendars.",
   "kinds": ["service", "bar-widget"],
@@ -30,12 +30,14 @@
       "customDayStartHour": 0,
       "customDayEndHour": 24,
       "defaultCalendarId": "",
-      "reminderMinutes": 10
+      "reminderMinutes": 10,
+      "maxUpcoming": 5,
+      "maxDone": 10
     },
     "schema": [
       { "key": "format", "type": "string", "label": "Clock format" },
       { "key": "formatAlt", "type": "string", "label": "Alternate clock format" },
-      { "key": "provider", "type": "string", "label": "Calendar provider" },
+      { "key": "provider", "type": "string", "label": "Provider" },
       { "key": "timeFormat", "type": "string", "label": "Time format" },
       { "key": "weekStartDay", "type": "number", "label": "Week starts" },
       { "key": "defaultView", "type": "string", "label": "Default view" },
@@ -45,10 +47,9 @@
       { "key": "customDayStartHour", "type": "number", "label": "Custom day start hour" },
       { "key": "customDayEndHour", "type": "number", "label": "Custom day end hour" },
       { "key": "defaultCalendarId", "type": "string", "label": "Default calendar" },
-      { "key": "reminderMinutes", "type": "number", "label": "Remind me" }
+      { "key": "reminderMinutes", "type": "number", "label": "Remind me" },
+      { "key": "maxUpcoming", "type": "number", "label": "Max upcoming tasks" },
+      { "key": "maxDone", "type": "number", "label": "Max completed tasks" }
     ]
-  },
-  "omarchy": {
-    "clonedFrom": "omarchy.clock"
   }
 }

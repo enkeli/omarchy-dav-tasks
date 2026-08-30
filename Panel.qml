@@ -7,7 +7,7 @@ import "CalendarModel.js" as Model
 
 Panel {
   id: root
-  moduleName: "sirwizardlizard.calendar"
+  moduleName: "dev.enkeli.omadav"
   ipcTarget: "omarchy.clock"
   manageIpc: false
 
@@ -65,7 +65,7 @@ Panel {
   readonly property string weekStartSetting: String(setting("weekStartDay", 1))
   readonly property int weekStart: Model.normalizedWeekStart(weekStartSetting, Qt.locale().firstDayOfWeek)
   readonly property string timeFormat: setting("timeFormat", "12h") === "24h" ? "24h" : "12h"
-  readonly property string defaultView: validChoice(setting("defaultView", "month"), ["month", "week", "work-week", "day"], "month")
+  readonly property string defaultView: validChoice(setting("defaultView", "month"), ["month", "week", "work-week", "day", "tasks"], "month")
   readonly property bool showWeekNumbers: setting("showWeekNumbers", true) !== false
   readonly property bool showDayPanel: setting("showDayPanel", true) !== false
   readonly property int customWeekStartHour: clampedHour(setting("customWeekStartHour", 8), 8)
@@ -89,9 +89,11 @@ Panel {
   readonly property var selectedEvents: Model.eventsForDay(eventGroups, selectedKey)
   readonly property var viewDays: Model.daysForView(selectedKey, viewMode, weekStart)
   readonly property string provider: setting("provider", "evolution-data-server")
-  readonly property string headline: viewMode === "month"
-    ? Qt.formatDate(new Date(viewYear, viewMonth, 1), "MMMM yyyy")
-    : Model.viewTitle(selectedKey, viewMode, weekStart)
+  readonly property string headline: viewMode === "tasks"
+    ? "Tasks"
+    : viewMode === "month"
+      ? Qt.formatDate(new Date(viewYear, viewMonth, 1), "MMMM yyyy")
+      : Model.viewTitle(selectedKey, viewMode, weekStart)
 
   function open() {
     if (!appliedDefaultView) {
@@ -170,6 +172,7 @@ Panel {
   }
 
   function movePeriod(delta) {
+    if (viewMode === "tasks") return
     if (viewMode === "month") {
       var next = Model.stepMonth(viewYear, viewMonth, delta)
       viewYear = next.year
@@ -1358,7 +1361,7 @@ Panel {
               spacing: Style.space(12)
               Item {
                 width: dayPanel.visible ? parent.width - dayPanel.width - parent.spacing : parent.width
-                height: root.viewMode === "month" ? monthViewRoot.height : timeGridRoot.height
+                height: root.viewMode === "month" ? monthViewRoot.height : root.viewMode === "tasks" ? tasksViewRoot.height : timeGridRoot.height
                 MonthView {
                   id: monthViewRoot
                   visible: root.viewMode === "month"
@@ -1366,7 +1369,12 @@ Panel {
                 }
                 TimeGridView {
                   id: timeGridRoot
-                  visible: root.viewMode !== "month"
+                  visible: root.viewMode !== "month" && root.viewMode !== "tasks"
+                  width: parent.width
+                }
+                TasksView {
+                  id: tasksViewRoot
+                  visible: root.viewMode === "tasks"
                   width: parent.width
                 }
               }

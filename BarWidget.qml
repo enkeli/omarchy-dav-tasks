@@ -7,7 +7,7 @@ import "CalendarModel.js" as Model
 
 BarWidget {
   id: root
-  moduleName: "sirwizardlizard.calendar"
+  moduleName: "dev.enkeli.omadav"
 
   property date displayDate: clock.date
 

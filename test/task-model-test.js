@@ -1,5 +1,5 @@
 const assert = require('assert')
-const model = require('../tasks-plugin/TaskModel.js')
+const model = require('../TaskModel.js')
 
 // normalizedTask
 assert.equal(model.normalizedTask({}).id, '')

@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "CalendarModel.js" as Model
+import "TaskModel.js" as TaskModel
 
 Item {
   id: root
@@ -43,10 +44,33 @@ Item {
   readonly property int maxHelperBytes: 8 * 1024 * 1024
   readonly property int maxHelperErrorBytes: 64 * 1024
 
+  // Tasks properties
+  property string calendarId: ""
+  property var allTasks: []
+  property var pendingTasks: []
+  property var doneTasks: []
+  property var cachedTasks: []
+  property string tasksStatus: "idle"
+  property string tasksErrorMessage: ""
+  property bool tasksSyncing: false
+  property date tasksLastSyncAt: new Date(NaN)
+  property string tasksLastSyncText: "Never synced"
+  property int tasksGeneration: 0
+  property int tasksLiveToken: 0
+  property int tasksCacheToken: 0
+  property bool tasksIgnoreCache: false
+  property string tasksPendingCreateId: ""
+  property var tasksPendingUpdateOriginal: null
+  property string pendingDeleteUid: ""
+  property string moduleName: "dev.enkeli.omadav"
+
   signal refreshed()
   signal eventCreated(var event)
   signal eventSaved(bool ok, string message)
   signal setupFinished(bool ok, string message)
+  signal taskCreated(var task)
+  signal taskUpdated(var task)
+  signal taskDeleted(string uid)
 
   function helperPath() {
     return decodeURIComponent(Qt.resolvedUrl("helper/omarchy-calendar-helper").toString().replace(/^file:\/\//, ""))
@@ -699,7 +723,7 @@ Item {
 
   function bootReminders() {
     if (!anchorProc.running) {
-      anchorProc.command = [helperPath(), "ensure-center-anchor", "--title", "sirwizardlizard.calendar"]
+      anchorProc.command = [helperPath(), "ensure-center-anchor", "--title", "dev.enkeli.omadav"]
       anchorProc.running = true
     }
     if (reminderStateProc.running) return
@@ -743,6 +767,279 @@ Item {
     setupProc.command = [helperPath(), "setup-caldav", "--provider", provider]
     setupProc.running = true
     setupTimeout.restart()
+  }
+
+  // ===== Tasks =====
+
+  function tasksMutationBusy() {
+    return tasksCreateProc.running || tasksUpdateProc.running || tasksDeleteProc.running
+  }
+
+  function listTasks(forceSync) {
+    tasksGeneration += 1
+    tasksErrorMessage = ""
+    if (cachedTasks.length > 0) {
+      applyTaskCache(cachedTasks, cachedCalendars)
+      tasksStatus = "ready"
+    }
+    readTasksCache()
+    var stale = !isNaN(tasksLastSyncAt.getTime()) && (Date.now() - tasksLastSyncAt.getTime() > 15 * 60 * 1000)
+    var shouldSync = forceSync === true || (cachedTasks.length === 0 && !tasksListProc.running) || stale
+    if (shouldSync) startTasksLiveSync(false)
+  }
+
+  function startTasksLiveSync(ifChanged) {
+    if (tasksListProc.running) {
+      tasksLiveToken += 1
+      tasksListProc.token = -1
+      return
+    }
+    tasksLiveToken += 1
+    tasksListProc.token = tasksLiveToken
+    if (cachedTasks.length === 0 && ifChanged !== true) tasksStatus = "loading"
+    tasksSyncing = true
+    listTasksTimeout.restart()
+    var cmd = [helperPath(), "list-tasks", "--provider", provider]
+    if (calendarId) cmd.push("--calendar-id", calendarId)
+    tasksListProc.command = cmd
+    tasksListProc.running = true
+  }
+
+  function applyTaskCache(tasks, cals) {
+    root.cachedTasks = tasks
+    root.cachedCalendars = cals || root.cachedCalendars
+    root.calendars = root.cachedCalendars
+    root.allTasks = tasks
+    root.pendingTasks = tasks.filter(function(task) { return TaskModel.isPending(task) })
+    root.doneTasks = tasks.filter(function(task) { return TaskModel.isCompleted(task) })
+    root.tasksStatus = "ready"
+    root.tasksErrorMessage = ""
+    if (root.tasksSyncing) {
+      root.tasksLastSyncAt = new Date()
+      root.tasksLastSyncText = Qt.formatDateTime(root.tasksLastSyncAt, "MMM d HH:mm")
+    } else if (isNaN(root.tasksLastSyncAt.getTime())) {
+      root.tasksLastSyncText = "Cached"
+    }
+  }
+
+  function readTasksCache() {
+    if (tasksCacheProc.running || tasksMutationBusy()) return
+    tasksCacheProc.token = tasksCacheToken
+    tasksCacheProc.command = [helperPath(), "list-tasks", "--from-cache", "--provider", provider]
+    if (calendarId) tasksCacheProc.command.push("--calendar-id", calendarId)
+    tasksCacheProc.running = true
+  }
+
+  function writeCache() {
+    if (tasksWriteCacheProc.running) return
+    tasksWriteCacheProc.secret = JSON.stringify({
+      tasks: cachedTasks,
+      calendars: cachedCalendars
+    })
+    tasksWriteCacheProc.command = [helperPath(), "tasks-save-cache", "--provider", provider]
+    tasksWriteCacheProc.running = true
+  }
+
+  function finishListCache(text, exitCode) {
+    if (tasksIgnoreCache || tasksMutationBusy()) return
+    if (tasksCacheProc.token !== root.tasksCacheToken) return
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      applyTaskCache(payload.tasks, payload.calendars)
+    }
+  }
+
+  function finishListTasks(text, exitCode) {
+    listTasksTimeout.stop()
+    tasksSyncing = false
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      tasksIgnoreCache = false
+      applyTaskCache(payload.tasks, payload.calendars)
+      writeCache()
+    } else if (cachedTasks.length === 0) {
+      root.tasksStatus = "error"
+      root.tasksErrorMessage = root.failMessage(payload, "Task helper failed")
+      root.refreshed()
+    }
+  }
+
+  function createTask(calendarIdArg, title, due, priority) {
+    var targetCalendar = String(calendarIdArg || calendarId || defaultCalendarId())
+    tasksStatus = "saving"
+    tasksErrorMessage = ""
+    if (tasksCreateProc.running) tasksCreateProc.running = false
+    tasksPendingCreateId = "omarchy-task-pending-" + Date.now()
+    var optimistic = TaskModel.normalizedTask({
+      id: tasksPendingCreateId,
+      uid: tasksPendingCreateId,
+      title: title,
+      due: due || "",
+      status: "NEEDS-ACTION",
+      priority: priority || "",
+      calendarId: targetCalendar,
+      calendarName: calendarNameById(targetCalendar)
+    })
+    optimistic._pending = true
+    var next = cachedTasks.slice()
+    next.push(optimistic)
+    applyTaskCache(next, cachedCalendars)
+    tasksCreateProc.command = [
+      helperPath(), "create-task",
+      "--provider", provider,
+      "--calendar-id", targetCalendar,
+      "--title", String(title || "(No title)"),
+      "--due", String(due || ""),
+      "--priority", String(priority || "")
+    ]
+    tasksCreateProc.running = true
+  }
+
+  function finishCreateTask(text, exitCode) {
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      removePendingTask(root.tasksPendingCreateId)
+      if (payload.tasks && payload.tasks.length > 0) {
+        mergeTask(payload.tasks[0])
+        root.taskCreated(payload.tasks[0])
+      }
+      root.tasksStatus = "ready"
+      root.tasksErrorMessage = ""
+      root.startTasksLiveSync(true)
+    } else {
+      removePendingTask(root.tasksPendingCreateId)
+      root.tasksStatus = "error"
+      root.tasksErrorMessage = root.failMessage(payload, "Could not create task.")
+    }
+    root.tasksPendingCreateId = ""
+  }
+
+  function updateTask(task, statusArg, percentComplete) {
+    if (!task || !task.uid || task._pending) return
+    tasksStatus = "saving"
+    tasksErrorMessage = ""
+    if (tasksUpdateProc.running) tasksUpdateProc.running = false
+    tasksPendingUpdateOriginal = task
+    var next = TaskModel.normalizedTask(task)
+    next.status = statusArg || task.status
+    next._pending = true
+    mergeTask(next)
+    var cmd = [
+      helperPath(), "update-task",
+      "--provider", provider,
+      "--calendar-id", String(task.calendarId || defaultCalendarId()),
+      "--uid", String(task.uid || ""),
+      "--status", String(statusArg || task.status || "NEEDS-ACTION")
+    ]
+    if (percentComplete !== undefined && percentComplete !== null) {
+      cmd.push("--percent-complete", String(percentComplete))
+    }
+    tasksUpdateProc.command = cmd
+    tasksUpdateProc.running = true
+  }
+
+  function finishUpdateTask(text, exitCode) {
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      if (payload.tasks && payload.tasks.length > 0) {
+        mergeTask(payload.tasks[0])
+        root.taskUpdated(payload.tasks[0])
+      }
+      root.tasksStatus = "ready"
+      root.tasksErrorMessage = ""
+      root.startTasksLiveSync(true)
+    } else {
+      if (root.tasksPendingUpdateOriginal) mergeTask(root.tasksPendingUpdateOriginal)
+      root.tasksStatus = "error"
+      root.tasksErrorMessage = root.failMessage(payload, "Could not update task.")
+    }
+    root.tasksPendingUpdateOriginal = null
+  }
+
+  function completeTask(task) {
+    updateTask(task, "COMPLETED", 100)
+  }
+
+  function deleteTask(task) {
+    if (!task || !task.uid || task._pending) return
+    tasksStatus = "saving"
+    tasksErrorMessage = ""
+    if (tasksDeleteProc.running) tasksDeleteProc.running = false
+    pendingDeleteUid = task.uid
+    removeTaskByUid(task.uid)
+    tasksDeleteProc.command = [
+      helperPath(), "delete-task",
+      "--provider", provider,
+      "--calendar-id", String(task.calendarId || defaultCalendarId()),
+      "--uid", String(task.uid || "")
+    ]
+    tasksDeleteProc.running = true
+  }
+
+  function finishDeleteTask(text, exitCode) {
+    if (exitCode !== 0) {
+      var payload = TaskModel.parseHelperResponse(root.helperText(text, ""))
+      root.tasksStatus = "error"
+      root.tasksErrorMessage = root.failMessage(payload, "Could not delete task.")
+      root.startTasksLiveSync(true)
+    } else {
+      root.taskDeleted(root.pendingDeleteUid)
+      root.tasksStatus = "ready"
+      root.tasksErrorMessage = ""
+      root.startTasksLiveSync(true)
+    }
+    root.pendingDeleteUid = ""
+  }
+
+  function mergeTask(task) {
+    if (!task || !task.id) return
+    var next = []
+    var replaced = false
+    var source = cachedTasks.length ? cachedTasks : allTasks
+    for (var i = 0; i < source.length; i++) {
+      if (source[i] && source[i].id === task.id) {
+        next.push(task)
+        replaced = true
+      } else {
+        next.push(source[i])
+      }
+    }
+    if (!replaced) next.push(task)
+    applyTaskCache(TaskModel.normalizeTasks(next), cachedCalendars)
+  }
+
+  function removeTaskByUid(uid) {
+    if (!uid) return
+    var next = []
+    var source = cachedTasks.length ? cachedTasks : allTasks
+    for (var i = 0; i < source.length; i++) {
+      if (!source[i] || source[i].uid !== uid) next.push(source[i])
+    }
+    applyTaskCache(TaskModel.normalizeTasks(next), cachedCalendars)
+  }
+
+  function removePendingTask(prefix) {
+    if (!prefix) return
+    var next = []
+    var source = cachedTasks.length ? cachedTasks : allTasks
+    for (var i = 0; i < source.length; i++) {
+      if (!source[i] || String(source[i].id || "").indexOf(prefix) !== 0) next.push(source[i])
+    }
+    applyTaskCache(TaskModel.normalizeTasks(next), cachedCalendars)
+  }
+
+  function defaultCalendarId() {
+    for (var i = 0; i < calendars.length; i++) {
+      if (calendars[i] && calendars[i].id) return calendars[i].id
+    }
+    return calendarId || ""
+  }
+
+  function calendarNameById(id) {
+    for (var i = 0; i < calendars.length; i++) {
+      if (calendars[i] && calendars[i].id === id) return calendars[i].name || "Calendar"
+    }
+    return "Calendar"
   }
 
   Process {
@@ -955,6 +1252,107 @@ Item {
       root.setupStatus = ""
       root.refreshed()
       root.runPendingSnapshot()
+    }
+  }
+
+  // ===== Task Processes =====
+
+  Process {
+    id: tasksListProc
+    property int token: 0
+    running: false
+
+    stdout: StdioCollector { id: tasksListOut; waitForEnd: true }
+    stderr: StdioCollector { id: tasksListErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      if (token !== root.tasksLiveToken) {
+        root.tasksSyncing = false
+        root.listTasksTimeout.stop()
+        return
+      }
+      root.finishListTasks(root.helperText(tasksListOut.text, tasksListErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: tasksCacheProc
+    property int token: 0
+    running: false
+
+    stdout: StdioCollector { id: tasksCacheOut; waitForEnd: true }
+    stderr: StdioCollector { id: tasksCacheErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishListCache(root.helperText(tasksCacheOut.text, tasksCacheErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: tasksWriteCacheProc
+    property string secret: ""
+    running: false
+    stdinEnabled: true
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+      stdinEnabled = false
+    }
+
+    stdout: StdioCollector { waitForEnd: true }
+  }
+
+  Process {
+    id: tasksCreateProc
+    running: false
+
+    stdout: StdioCollector { id: tasksCreateOut; waitForEnd: true }
+    stderr: StdioCollector { id: tasksCreateErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishCreateTask(root.helperText(tasksCreateOut.text, tasksCreateErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: tasksUpdateProc
+    running: false
+
+    stdout: StdioCollector { id: tasksUpdateOut; waitForEnd: true }
+    stderr: StdioCollector { id: tasksUpdateErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishUpdateTask(root.helperText(tasksUpdateOut.text, tasksUpdateErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: tasksDeleteProc
+    running: false
+
+    stdout: StdioCollector { id: tasksDeleteOut; waitForEnd: true }
+    stderr: StdioCollector { id: tasksDeleteErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishDeleteTask(root.helperText(tasksDeleteOut.text, tasksDeleteErr.text), exitCode)
+    }
+  }
+
+  Timer {
+    id: listTasksTimeout
+    interval: 60000
+    repeat: false
+    onTriggered: {
+      if (!tasksListProc.running) return
+      tasksListProc.running = false
+      root.tasksSyncing = false
+      if (root.cachedTasks.length === 0) {
+        root.tasksStatus = "error"
+        root.tasksErrorMessage = "Task sync timed out. Try again."
+      } else {
+        root.tasksStatus = "ready"
+      }
+      root.refreshed()
     }
   }
 }

@@ -75,8 +75,8 @@ Google Calendar and Outlook need OAuth app review. They are not in this plugin. 
 ## Uninstall
 
 ```bash
-omarchy plugin disable sirwizardlizard.calendar
-omarchy plugin remove sirwizardlizard.calendar
+omarchy plugin disable dev.enkeli.omadav
+omarchy plugin remove dev.enkeli.omadav
 ```
 
 ## Requirements

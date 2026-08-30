@@ -2476,7 +2476,7 @@ def remove_cache_event(event_id: str) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "list-tasks", "create-task", "update-task", "delete-task"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
@@ -2510,7 +2510,7 @@ def main(argv: list[str]) -> int:
                 payload = {key: value for key, value in payload.items() if key != "events"}
             return emit_json(payload)
         if args.operation == "ensure-center-anchor":
-            return emit_json(ensure_center_anchor(args.title or "sirwizardlizard.calendar"))
+            return emit_json(ensure_center_anchor(args.title or "dev.enkeli.omadav"))
         if args.operation == "reminders-state":
             return emit_json(read_reminders())
         if args.operation == "reminders-save":
@@ -2581,6 +2581,11 @@ def main(argv: list[str]) -> int:
             if args.provider not in ("eds", "evolution-data-server"):
                 raise ValueError("delete-task currently requires the evolution-data-server provider.")
             return emit_json(delete_task_eds(args.calendar_id, args.uid))
+        if args.operation == "tasks-save-cache":
+            raw = read_stdin_limited(MAX_CACHE_BYTES)
+            payload = json.loads(raw or "{}")
+            write_tasks_cache(payload)
+            return emit_json({"ok": True, "provider": payload.get("provider") or args.provider})
     except Exception as error:
         return emit_json({"ok": False, "provider": args.provider, "error": {"code": "operation-failed", "message": str(error)}})
 
