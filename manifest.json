@@ -51,5 +51,8 @@
       { "key": "maxUpcoming", "type": "number", "label": "Max upcoming tasks" },
       { "key": "maxDone", "type": "number", "label": "Max completed tasks" }
     ]
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.clock"
   }
 }
