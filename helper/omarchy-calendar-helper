@@ -419,6 +419,22 @@ def component_event(component, calendar: dict, modules: EdsModules | None = None
     }
 
 
+def safe_component_datetime(component_dt, modules: EdsModules | None = None, client=None) -> tuple[str, bool, str]:
+    """Safely handle component datetime, handling both ComponentDateTime and ICalGLib.Time objects."""
+    if component_dt is None:
+        return "", False, ""
+    # If it's a ComponentDateTime object, use component_datetime
+    if hasattr(component_dt, "get_value"):
+        return component_datetime(component_dt, modules, client)
+    # If it's an ICalGLib.Time object directly
+    if hasattr(component_dt, "is_null_time"):
+        if component_dt.is_null_time():
+            return "", False, ""
+        stamp, all_day = ical_time_iso(component_dt, modules, client)
+        return stamp, all_day, ""
+    return "", False, ""
+
+
 def component_task(component, calendar: dict, modules: EdsModules | None = None, client=None) -> dict:
     uid = component.get_uid() or ""
     summary = text_value(component.get_summary()) or "(No title)"
@@ -432,9 +448,10 @@ def component_task(component, calendar: dict, modules: EdsModules | None = None,
         "CANCELLED": "cancelled",
     }
     status = status_map.get(status_raw, "needs-action")
-    due, due_all_day, _due_tz = component_datetime(component.get_due(), modules, client)
-    dtstart, start_all_day, _start_tz = component_datetime(component.get_dtstart(), modules, client)
-    completed, _completed_all_day, _completed_tz = component_datetime(component.get_completed(), modules, client)
+    # Task properties (due, dtstart, completed) may return ComponentDateTime or ICalGLib.Time
+    due, due_all_day, _due_tz = safe_component_datetime(component.get_due(), modules, client)
+    dtstart, start_all_day, _start_tz = safe_component_datetime(component.get_dtstart(), modules, client)
+    completed, _completed_all_day, _completed_tz = safe_component_datetime(component.get_completed(), modules, client)
     percent = 0
     try:
         percent = int(component.get_percent_complete() or 0)
@@ -2302,6 +2319,25 @@ def cached_snapshot(start: datetime, end: datetime, provider: str) -> dict:
     }
 
 
+def cached_tasks_snapshot(provider: str) -> dict:
+    cache = read_tasks_cache()
+    if not cache:
+        return {
+            "ok": False,
+            "provider": provider,
+            "tasks": [],
+            "cached": True,
+            "error": {"code": "no-cache", "message": "No local tasks cache yet."},
+        }
+    return {
+        "ok": True,
+        "provider": cache.get("provider") or provider,
+        "tasks": bound_items(cache.get("tasks"), MAX_EVENTS),
+        "cached": True,
+        "cachedAt": cache.get("cachedAt") or "",
+    }
+
+
 def merge_cache_calendars(added: list) -> None:
     cache = read_cache() or {"ok": True, "provider": "evolution-data-server", "calendars": [], "events": []}
     existing = {str(item.get("id") or ""): item for item in (cache.get("calendars") or []) if item}
@@ -2509,6 +2545,8 @@ def main(argv: list[str]) -> int:
             if args.operation == "list-calendars":
                 payload = {key: value for key, value in payload.items() if key != "events"}
             return emit_json(payload)
+        if args.from_cache and args.operation == "list-tasks":
+            return emit_json(cached_tasks_snapshot(args.provider))
         if args.operation == "ensure-center-anchor":
             return emit_json(ensure_center_anchor(args.title or "dev.enkeli.omadav"))
         if args.operation == "reminders-state":
