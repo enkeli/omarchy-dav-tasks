@@ -1008,9 +1008,11 @@ def eds_attach_discovered_calendars(modules: EdsModules, registry, parent, crede
         calendar.set_backend_name("caldav")
         calendar.set_selected(True)
         # Enable task list support for CalDAV sources
-        if child.has_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST):
+        try:
             task_list = child.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
             task_list.set_backend_name("caldav")
+        except Exception:
+            pass  # Task list extension not available
         color = str(getattr(item, "color", "") or "")
         if color:
             calendar.set_color(color)
@@ -1189,9 +1191,11 @@ def eds_add_direct_calendar(modules: EdsModules, registry, href: str, display_na
     calendar.set_backend_name("caldav")
     calendar.set_selected(True)
     # Enable task list support for CalDAV sources
-    if source.has_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST):
+    try:
         task_list = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
         task_list.set_backend_name("caldav")
+    except Exception:
+        pass  # Task list extension not available
     uri = glib_parse_uri(modules, href)
     webdav = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_WEBDAV_BACKEND)
     webdav.set_uri(uri)
