@@ -152,14 +152,6 @@ Panel {
               height: Math.max(viewControls.implicitHeight, actionControls.implicitHeight, settingsTopButton.implicitHeight)
 
               Row {
-                id: viewControls
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(4)
-                ViewButton { text: "Tasks"; selected: true }
-              }
-
-              Row {
                 id: actionControls
                 anchors.right: dayPanelToggle.left
                 anchors.rightMargin: Style.space(8)
