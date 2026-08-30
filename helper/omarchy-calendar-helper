@@ -1007,6 +1007,10 @@ def eds_attach_discovered_calendars(modules: EdsModules, registry, parent, crede
         calendar = child.get_extension(modules.EDataServer.SOURCE_EXTENSION_CALENDAR)
         calendar.set_backend_name("caldav")
         calendar.set_selected(True)
+        # Enable task list support for CalDAV sources
+        if child.has_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST):
+            task_list = child.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
+            task_list.set_backend_name("caldav")
         color = str(getattr(item, "color", "") or "")
         if color:
             calendar.set_color(color)
