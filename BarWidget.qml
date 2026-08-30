@@ -51,8 +51,8 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "Tasks"
-    labelVisible: true
+    iconText: "\uf00c"
+    labelVisible: false
     hasVisualContent: true
     horizontalMargin: 8.75
     verticalPadding: 8.75
