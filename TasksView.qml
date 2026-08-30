@@ -288,6 +288,15 @@ Column {
     }
   }
 
+  // --- Load tasks when view becomes visible ---
+
+  onVisibleChanged: {
+    if (visible && taskService) {
+      tasksView.now = new Date()
+      taskService.listTasks()
+    }
+  }
+
   // --- Periodic refresh timer ---
 
   Timer {
