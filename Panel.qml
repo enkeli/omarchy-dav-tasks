@@ -69,7 +69,7 @@ Panel {
   readonly property string weekStartSetting: String(setting("weekStartDay", 1))
   readonly property int weekStart: Model.normalizedWeekStart(weekStartSetting, Qt.locale().firstDayOfWeek)
   readonly property string timeFormat: setting("timeFormat", "12h") === "24h" ? "24h" : "12h"
-  readonly property string defaultView: validChoice(setting("defaultView", "month"), ["month", "week", "work-week", "day", "tasks"], "month")
+  readonly property string defaultView: validChoice(setting("defaultView", "month"), ["month", "week", "day", "tasks"], "month")
   readonly property bool showWeekNumbers: setting("showWeekNumbers", true) !== false
   readonly property bool showDayPanel: setting("showDayPanel", true) !== false
   readonly property int customWeekStartHour: clampedHour(setting("customWeekStartHour", 8), 8)
@@ -78,8 +78,6 @@ Panel {
   readonly property int customDayEndHour: clampedEndHour(setting("customDayEndHour", 24), 24, customDayStartHour)
   readonly property int weekStartHour: customWeekStartHour
   readonly property int weekEndHour: customWeekEndHour
-  readonly property int workWeekStartHour: weekStartHour
-  readonly property int workWeekEndHour: weekEndHour
   readonly property int dayStartHour: customDayStartHour
   readonly property int dayEndHour: customDayEndHour
   readonly property int fixedEventDurationMinutes: 60
@@ -848,7 +846,6 @@ Panel {
                 spacing: Style.space(4)
                 ViewButton { text: "Month"; selected: root.viewMode === "month"; onClicked: root.setView("month"); onDoubleClicked: { root.setView("month"); root.goToToday() } }
                 ViewButton { text: "Week"; selected: root.viewMode === "week"; onClicked: root.setView("week"); onDoubleClicked: { root.setView("week"); root.goToToday() } }
-                ViewButton { text: "Work week"; selected: root.viewMode === "work-week"; onClicked: root.setView("work-week"); onDoubleClicked: { root.setView("work-week"); root.goToToday() } }
                 ViewButton { text: "Day"; selected: root.viewMode === "day"; onClicked: root.setView("day"); onDoubleClicked: { root.setView("day"); root.goToToday() } }
                 ViewButton { text: "Tasks"; selected: root.viewMode === "tasks"; onClicked: root.setView("tasks") }
               }
@@ -1962,7 +1959,7 @@ Panel {
           label: "Default view"
           hint: "Which calendar view opens first."
           value: root.draftDefaultView
-          options: [{ value: "month", label: "Month" }, { value: "week", label: "Week" }, { value: "work-week", label: "Work week" }, { value: "day", label: "Day" }]
+          options: [{ value: "month", label: "Month" }, { value: "week", label: "Week" }, { value: "day", label: "Day" }]
           onChanged: function(value) { root.draftDefaultView = value }
         }
         SettingsChoiceRow {
@@ -2005,7 +2002,7 @@ Panel {
         title: "Visible hours"
         SettingsRangeRow {
           label: "Week"
-          hint: "Hour range shown in week and work week views."
+          hint: "Hour range shown in week view."
           startValue: String(root.draftCustomWeekStartHour)
           endValue: String(root.draftCustomWeekEndHour)
           onStartChanged: function(value) { root.draftCustomWeekStartHour = parseInt(value, 10) }
@@ -2652,8 +2649,8 @@ Panel {
   component TimeGridView: Column {
     id: timeGridView
     spacing: Style.space(6)
-    readonly property int hourStart: root.viewMode === "day" ? root.dayStartHour : (root.viewMode === "work-week" ? root.workWeekStartHour : root.weekStartHour)
-    readonly property int hourEnd: root.viewMode === "day" ? root.dayEndHour : (root.viewMode === "work-week" ? root.workWeekEndHour : root.weekEndHour)
+    readonly property int hourStart: root.viewMode === "day" ? root.dayStartHour : root.weekStartHour
+    readonly property int hourEnd: root.viewMode === "day" ? root.dayEndHour : root.weekEndHour
     readonly property int hourCount: hourEnd - hourStart
     readonly property int hourHeight: root.viewMode === "day" ? Style.space(50) : Style.space(42)
     readonly property int gridLeft: Style.space(48)
