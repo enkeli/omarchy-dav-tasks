@@ -836,6 +836,7 @@ Panel {
                 ViewButton { text: "Week"; selected: root.viewMode === "week"; onClicked: root.setView("week"); onDoubleClicked: { root.setView("week"); root.goToToday() } }
                 ViewButton { text: "Work week"; selected: root.viewMode === "work-week"; onClicked: root.setView("work-week"); onDoubleClicked: { root.setView("work-week"); root.goToToday() } }
                 ViewButton { text: "Day"; selected: root.viewMode === "day"; onClicked: root.setView("day"); onDoubleClicked: { root.setView("day"); root.goToToday() } }
+                ViewButton { text: "Tasks"; selected: root.viewMode === "tasks"; onClicked: root.setView("tasks") }
               }
 
               Item {
