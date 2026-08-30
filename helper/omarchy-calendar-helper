@@ -862,7 +862,8 @@ def list_tasks_eds(calendar_id: str) -> dict:
                         task = component_task(component, calendar, modules, client)
                         if task["uid"]:
                             all_tasks.append(task)
-                    except Exception:
+                    except Exception as task_error:
+                        sync_log("list-tasks-component-error", uid=uid, error=str(task_error)[:200])
                         continue
         except Exception as error:
             sync_log("list-tasks-skip", uid=uid, name=name, error=str(error)[:200])
