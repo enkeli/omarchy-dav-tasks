@@ -18,7 +18,7 @@ This replaces the built-in clock. Shortcuts stay put. If Omarchy leaves the cent
 
 ## What it does
 
-- Month, week, work week, and day views
+- Month, week, and day views
 - Create, edit, and delete events (including overnight and recurring) — they sync to your phone and other devices
 - iCloud, Nextcloud, Fastmail, and other CalDAV servers
 - Calendars that live only on this computer
