@@ -434,7 +434,7 @@ def component_task(component, calendar: dict, modules: EdsModules | None = None,
     status = status_map.get(status_raw, "needs-action")
     due, due_all_day, _due_tz = component_datetime(component.get_due(), modules, client)
     dtstart, start_all_day, _start_tz = component_datetime(component.get_dtstart(), modules, client)
-    completed, _completed_all_day, _completed_tz = component_datetime(component.get_completed_date(), modules, client)
+    completed, _completed_all_day, _completed_tz = component_datetime(component.get_completed(), modules, client)
     percent = 0
     try:
         percent = int(component.get_percent_complete() or 0)
