@@ -64,6 +64,11 @@ Item {
   property string pendingDeleteUid: ""
   property string moduleName: "dev.enkeli.omadav"
 
+  // Debug: log when allTasks changes
+  onAllTasksChanged: {
+    console.log("[Service] allTasks changed:", allTasks ? allTasks.length : 0)
+  }
+
   signal refreshed()
   signal eventCreated(var event)
   signal eventSaved(bool ok, string message)
@@ -776,20 +781,25 @@ Item {
   }
 
   function listTasks(forceSync) {
+    console.log("[Service] listTasks called, cachedTasks.length:", cachedTasks.length, "forceSync:", forceSync)
     tasksGeneration += 1
     tasksErrorMessage = ""
     if (cachedTasks.length > 0) {
+      console.log("[Service] applying cached tasks:", cachedTasks.length)
       applyTaskCache(cachedTasks, cachedCalendars)
       tasksStatus = "ready"
     }
     readTasksCache()
     var stale = !isNaN(tasksLastSyncAt.getTime()) && (Date.now() - tasksLastSyncAt.getTime() > 15 * 60 * 1000)
     var shouldSync = forceSync === true || (cachedTasks.length === 0 && !tasksListProc.running) || stale
+    console.log("[Service] shouldSync:", shouldSync, "stale:", stale)
     if (shouldSync) startTasksLiveSync(false)
   }
 
   function startTasksLiveSync(ifChanged) {
+    console.log("[Service] startTasksLiveSync ifChanged:", ifChanged)
     if (tasksListProc.running) {
+      console.log("[Service] startTasksLiveSync - already running, incrementing token")
       tasksLiveToken += 1
       tasksListProc.token = -1
       return
@@ -801,17 +811,20 @@ Item {
     listTasksTimeout.restart()
     var cmd = [helperPath(), "list-tasks", "--provider", provider]
     if (calendarId) cmd.push("--calendar-id", calendarId)
+    console.log("[Service] startTasksLiveSync command:", cmd)
     tasksListProc.command = cmd
     tasksListProc.running = true
   }
 
   function applyTaskCache(tasks, cals) {
+    console.log("[Service] applyTaskCache tasks:", tasks ? tasks.length : 0, "cals:", cals ? cals.length : 0)
     root.cachedTasks = tasks
     root.cachedCalendars = cals || root.cachedCalendars
     root.calendars = root.cachedCalendars
     root.allTasks = tasks
     root.pendingTasks = tasks.filter(function(task) { return TaskModel.isPending(task) })
     root.doneTasks = tasks.filter(function(task) { return TaskModel.isCompleted(task) })
+    console.log("[Service] applyTaskCache result - allTasks:", root.allTasks.length, "pending:", root.pendingTasks.length, "done:", root.doneTasks.length)
     root.tasksStatus = "ready"
     root.tasksErrorMessage = ""
     if (root.tasksSyncing) {
@@ -823,7 +836,11 @@ Item {
   }
 
   function readTasksCache() {
-    if (tasksCacheProc.running || tasksMutationBusy()) return
+    if (tasksCacheProc.running || tasksMutationBusy()) {
+      console.log("[Service] readTasksCache skipped - already running or mutating")
+      return
+    }
+    console.log("[Service] readTasksCache starting")
     tasksCacheProc.token = tasksCacheToken
     tasksCacheProc.command = [helperPath(), "list-tasks", "--from-cache", "--provider", provider]
     if (calendarId) tasksCacheProc.command.push("--calendar-id", calendarId)
@@ -831,7 +848,11 @@ Item {
   }
 
   function writeCache() {
-    if (tasksWriteCacheProc.running) return
+    if (tasksWriteCacheProc.running) {
+      console.log("[Service] writeCache skipped - already running")
+      return
+    }
+    console.log("[Service] writeCache - tasks:", cachedTasks.length)
     tasksWriteCacheProc.secret = JSON.stringify({
       tasks: cachedTasks,
       calendars: cachedCalendars
@@ -841,18 +862,28 @@ Item {
   }
 
   function finishListCache(text, exitCode) {
-    if (tasksIgnoreCache || tasksMutationBusy()) return
-    if (tasksCacheProc.token !== root.tasksCacheToken) return
+    console.log("[Service] finishListCache exitCode:", exitCode, "text length:", text ? text.length : 0)
+    if (tasksIgnoreCache || tasksMutationBusy()) {
+      console.log("[Service] finishListCache skipped - ignoreCache or mutating")
+      return
+    }
+    if (tasksCacheProc.token !== root.tasksCacheToken) {
+      console.log("[Service] finishListCache skipped - token mismatch")
+      return
+    }
     var payload = TaskModel.parseHelperResponse(text)
+    console.log("[Service] finishListCache payload.ok:", payload.ok, "tasks:", payload.tasks ? payload.tasks.length : 0)
     if (exitCode === 0 && payload.ok) {
       applyTaskCache(payload.tasks, payload.calendars)
     }
   }
 
   function finishListTasks(text, exitCode) {
+    console.log("[Service] finishListTasks exitCode:", exitCode, "text length:", text ? text.length : 0)
     listTasksTimeout.stop()
     tasksSyncing = false
     var payload = TaskModel.parseHelperResponse(text)
+    console.log("[Service] finishListTasks payload.ok:", payload.ok, "tasks:", payload.tasks ? payload.tasks.length : 0)
     if (exitCode === 0 && payload.ok) {
       tasksIgnoreCache = false
       applyTaskCache(payload.tasks, payload.calendars)
@@ -1266,7 +1297,9 @@ Item {
     stderr: StdioCollector { id: tasksListErr; waitForEnd: true }
 
     onExited: function(exitCode) {
+      console.log("[Service] tasksListProc exited with code:", exitCode)
       if (token !== root.tasksLiveToken) {
+        console.log("[Service] tasksListProc token mismatch, ignoring")
         root.tasksSyncing = false
         root.listTasksTimeout.stop()
         return
@@ -1284,6 +1317,7 @@ Item {
     stderr: StdioCollector { id: tasksCacheErr; waitForEnd: true }
 
     onExited: function(exitCode) {
+      console.log("[Service] tasksCacheProc exited with code:", exitCode)
       root.finishListCache(root.helperText(tasksCacheOut.text, tasksCacheErr.text), exitCode)
     }
   }
