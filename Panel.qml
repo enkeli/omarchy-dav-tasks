@@ -14,7 +14,11 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
-  readonly property var calendarService: bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
+  readonly property var calendarService: {
+    var service = bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
+    console.log("[Panel] calendarService property evaluated:", service ? "available" : "null")
+    return service
+  }
 
   property date today: new Date()
   readonly property string todayKey: Model.keyForDate(today)
@@ -165,10 +169,16 @@ Panel {
   }
 
   function refresh(forceSync) {
+    console.log("[Panel] refresh called, viewMode:", viewMode, "forceSync:", forceSync)
     root.today = new Date()
     if (!root.selectedKey) root.selectedKey = root.todayKey
     var range = activeRange()
-    if (calendarService) calendarService.snapshot(range.start, range.end, provider, forceSync === true)
+    if (calendarService) {
+      console.log("[Panel] refresh - calling snapshot for range:", range.start, "to", range.end)
+      calendarService.snapshot(range.start, range.end, provider, forceSync === true)
+    } else {
+      console.log("[Panel] refresh - no calendarService available")
+    }
   }
 
   function movePeriod(delta) {
@@ -204,6 +214,10 @@ Panel {
     showingSetup = false
     showingSettings = false
     refresh()
+    // Load tasks when switching to tasks view
+    if (mode === "tasks" && calendarService) {
+      calendarService.listTasks()
+    }
   }
 
   function dayKey(date) { return Model.keyForDate(date) }
@@ -1377,6 +1391,9 @@ Panel {
                   id: tasksViewRoot
                   visible: root.viewMode === "tasks"
                   width: parent.width
+                  calendarService: root.calendarService
+                  viewMode: root.viewMode
+                  opened: root.opened
                 }
               }
               DayPanel {

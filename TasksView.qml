@@ -1,14 +1,29 @@
 import QtQuick
 import QtQuick.Controls
+import qs.Commons
+import qs.Ui
 import "TaskModel.js" as TaskModel
 
 Column {
   id: tasksView
   spacing: Style.space(4)
 
-  readonly property var taskService: root.calendarService
+  // Accept service as property from Panel.qml (root is not accessible from separate file)
+  property var calendarService: null
+  property string viewMode: "month"
+  property bool opened: false
+
+  readonly property var taskService: calendarService
   property string activeTab: "pending"
   property date now: new Date()
+
+  // Direct binding to taskService.allTasks - this should update when the property changes
+  readonly property var allTasks: taskService ? taskService.allTasks : []
+
+  // Debug: log when allTasks changes
+  onAllTasksChanged: {
+    console.log("[TasksView] allTasks property changed:", allTasks ? allTasks.length : 0)
+  }
 
   // --- Inline sub-components ---
 
@@ -31,7 +46,7 @@ Column {
       anchors.centerIn: parent
       text: tabBtn.text
       color: tabBtn.selected ? Style.selectedStateColor(Color.foreground, Color.accent) : Color.foreground
-      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.family: Style.font.family
       font.pixelSize: Style.font.body
       font.bold: tabBtn.selected
     }
@@ -59,7 +74,7 @@ Column {
       width: parent.width
       text: taskSection.title
       color: Color.foreground
-      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.family: Style.font.family
       font.pixelSize: Style.font.body
       font.bold: true
     }
@@ -82,7 +97,7 @@ Column {
       width: parent.width
       text: taskSection.emptyText
       color: Color.muted
-      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall
       textFormat: Text.PlainText
     }
@@ -128,7 +143,7 @@ Column {
         anchors.verticalCenter: parent.verticalCenter
         text: taskItem.task && taskItem.task.status === "COMPLETED" ? "\u2713" : "\u25CB"
         color: taskItem.task && taskItem.task.status === "COMPLETED" ? Color.muted : Color.foreground
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         textFormat: Text.PlainText
       }
@@ -143,7 +158,7 @@ Column {
           text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.title, 200) : ""
           color: taskItem.overdue ? Color.urgent : Color.foreground
           elide: Text.ElideRight
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           font.bold: taskItem.overdue
           textFormat: Text.PlainText
@@ -155,7 +170,7 @@ Column {
           text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
           color: Color.muted
           elide: Text.ElideRight
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.family: Style.font.family
           font.pixelSize: Style.font.caption
           textFormat: Text.PlainText
         }
@@ -169,7 +184,7 @@ Column {
           visible: taskItem.dateText !== ""
           text: taskItem.dateText
           color: taskItem.overdue ? Color.urgent : Color.muted
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.family: Style.font.family
           font.pixelSize: Style.font.caption
           font.bold: taskItem.overdue
           textFormat: Text.PlainText
@@ -212,7 +227,7 @@ Column {
     textFormat: Text.PlainText
     color: Color.urgent
     wrapMode: Text.WordWrap
-    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+    font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
   }
 
@@ -222,7 +237,7 @@ Column {
     width: parent.width
     text: "Loading tasks..."
     color: Color.muted
-    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+    font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
     textFormat: Text.PlainText
   }
@@ -235,7 +250,7 @@ Column {
 
     TaskSection {
       title: "Upcoming"
-      tasks: taskService ? TaskModel.upcomingTasks(taskService.allTasks, 5) : []
+      tasks: TaskModel.upcomingTasks(tasksView.allTasks, 5)
       emptyText: "No upcoming tasks"
       dateLabel: "due"
       showOverdue: true
@@ -243,7 +258,7 @@ Column {
 
     TaskSection {
       title: "Backlog"
-      tasks: taskService ? TaskModel.backlogTasks(taskService.allTasks) : []
+      tasks: TaskModel.backlogTasks(tasksView.allTasks)
       emptyText: "No backlog tasks"
       dateLabel: "created"
       showOverdue: false
@@ -258,7 +273,7 @@ Column {
 
     TaskSection {
       title: "Completed"
-      tasks: taskService ? TaskModel.doneTasks(taskService.allTasks, 10) : []
+      tasks: TaskModel.doneTasks(tasksView.allTasks, 10)
       emptyText: "No completed tasks"
       dateLabel: "completed"
       showOverdue: false
@@ -297,13 +312,22 @@ Column {
     }
   }
 
+  // --- Load tasks on creation if already visible ---
+
+  Component.onCompleted: {
+    if (visible && taskService) {
+      tasksView.now = new Date()
+      taskService.listTasks()
+    }
+  }
+
   // --- Periodic refresh timer ---
 
   Timer {
     id: refreshTimer
     interval: 60000
     repeat: true
-    running: root.viewMode === "tasks" && root.opened
+    running: tasksView.viewMode === "tasks" && tasksView.opened
     onTriggered: {
       tasksView.now = new Date()
       if (taskService) taskService.listTasks()
