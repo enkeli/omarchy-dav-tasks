@@ -1184,6 +1184,10 @@ def eds_add_direct_calendar(modules: EdsModules, registry, href: str, display_na
     calendar = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_CALENDAR)
     calendar.set_backend_name("caldav")
     calendar.set_selected(True)
+    # Enable task list support for CalDAV sources
+    if source.has_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST):
+        task_list = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
+        task_list.set_backend_name("caldav")
     uri = glib_parse_uri(modules, href)
     webdav = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_WEBDAV_BACKEND)
     webdav.set_uri(uri)
