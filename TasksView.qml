@@ -27,39 +27,6 @@ Column {
 
   // --- Inline sub-components ---
 
-  component TabButton: Rectangle {
-    id: tabBtn
-    property string text: ""
-    property bool selected: false
-    signal clicked()
-
-    implicitWidth: tabLabel.implicitWidth + Style.spacing.controlPaddingX * 2 + Style.space(2)
-    implicitHeight: tabLabel.implicitHeight + Style.spacing.controlPaddingY * 2 + Style.space(2)
-    radius: Style.cornerRadius
-    color: tabMouse.pressed ? Style.pressedFillFor(Color.foreground, Color.accent)
-      : tabMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent)
-      : selected ? Style.selectedFillFor(Color.foreground, Color.accent)
-      : "transparent"
-
-    Text {
-      id: tabLabel
-      anchors.centerIn: parent
-      text: tabBtn.text
-      color: tabBtn.selected ? Style.selectedStateColor(Color.foreground, Color.accent) : Color.foreground
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      font.bold: tabBtn.selected
-    }
-
-    MouseArea {
-      id: tabMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: tabBtn.clicked()
-    }
-  }
-
   component TaskSection: Column {
     id: taskSection
     property string title: ""
@@ -201,23 +168,6 @@ Column {
   }
 
   // --- Content ---
-
-  // Tab bar
-  Row {
-    width: parent.width
-    spacing: Style.space(4)
-
-    TabButton {
-      text: "Pending"
-      selected: tasksView.activeTab === "pending"
-      onClicked: tasksView.activeTab = "pending"
-    }
-    TabButton {
-      text: "Done"
-      selected: tasksView.activeTab === "done"
-      onClicked: tasksView.activeTab = "done"
-    }
-  }
 
   // Error message
   Text {

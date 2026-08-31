@@ -144,7 +144,26 @@ Panel {
 
             Item {
               width: parent.width
-              height: Math.max(actionControls.implicitHeight, settingsTopButton.implicitHeight)
+              height: Math.max(tabControls.implicitHeight, actionControls.implicitHeight, settingsTopButton.implicitHeight)
+
+              Row {
+                id: tabControls
+                visible: !root.showingSettings
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(4)
+
+                ViewButton {
+                  text: "Pending"
+                  selected: tasksViewRoot.activeTab === "pending"
+                  onClicked: tasksViewRoot.activeTab = "pending"
+                }
+                ViewButton {
+                  text: "Done"
+                  selected: tasksViewRoot.activeTab === "done"
+                  onClicked: tasksViewRoot.activeTab = "done"
+                }
+              }
 
               Row {
                 id: actionControls
