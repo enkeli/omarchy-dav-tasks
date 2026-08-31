@@ -148,7 +148,7 @@ Panel {
 
             Item {
               width: parent.width
-              height: Math.max(viewControls.implicitHeight, actionControls.implicitHeight, settingsTopButton.implicitHeight)
+              height: Math.max(actionControls.implicitHeight, settingsTopButton.implicitHeight)
 
               Row {
                 id: actionControls
