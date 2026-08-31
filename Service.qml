@@ -551,6 +551,36 @@ Item {
     }
   }
 
+  // ===== List Calendars =====
+
+  function listCalendars() {
+    if (listCalendarsProc.running) return
+    listCalendarsProc.command = [helperPath(), "list-calendars", "--provider", provider]
+    listCalendarsProc.running = true
+  }
+
+  function finishListCalendars(text, exitCode) {
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      root.calendars = payload.calendars || []
+      root.cachedCalendars = payload.calendars || []
+    } else {
+      console.log("[Service] listCalendars failed:", failMessage(payload, "Failed to list calendars"))
+    }
+  }
+
+  Process {
+    id: listCalendarsProc
+    running: false
+
+    stdout: StdioCollector { id: listCalendarsOut; waitForEnd: true }
+    stderr: StdioCollector { id: listCalendarsErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishListCalendars(root.helperText(listCalendarsOut.text, listCalendarsErr.text), exitCode)
+    }
+  }
+
   Timer {
     id: listTasksTimeout
     interval: 60000
@@ -592,6 +622,7 @@ Item {
 
   Component.onCompleted: {
     console.log("[tasks-widget] Service.onCompleted moduleName=", root.moduleName)
+    listCalendars()
     Qt.callLater(ensureRightAnchor)
   }
 }
