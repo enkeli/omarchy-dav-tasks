@@ -33,6 +33,10 @@ Item {
   property string pendingDeleteUid: ""
   property string moduleName: "dev.enkeli.nextcloud.tasks"
 
+  // CalDAV setup properties
+  property string caldavSetupStatus: "idle"
+  property string caldavSetupMessage: ""
+
   // Debug: log when allTasks changes
   onAllTasksChanged: {
     console.log("[Service] allTasks changed:", allTasks ? allTasks.length : 0)
@@ -373,6 +377,35 @@ Item {
     return "Calendar"
   }
 
+  // ===== CalDAV Setup =====
+
+  function setupCaldav(displayName, url, username, password) {
+    caldavSetupStatus = "connecting"
+    caldavSetupMessage = ""
+    caldavSetupSecret = JSON.stringify({
+      "displayName": displayName,
+      "url": url,
+      "username": username,
+      "password": password
+    })
+    caldavSetupProc.command = [helperPath(), "setup-caldav", "--provider", provider]
+    caldavSetupProc.running = true
+  }
+
+  function finishSetupCaldav(text, exitCode) {
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      caldavSetupStatus = "success"
+      caldavSetupMessage = ""
+      root.calendars = payload.calendars || []
+      root.cachedCalendars = payload.calendars || []
+      listTasks(true)
+    } else {
+      caldavSetupStatus = "error"
+      caldavSetupMessage = failMessage(payload)
+    }
+  }
+
   // ===== Task Processes =====
 
   Process {
@@ -421,6 +454,23 @@ Item {
     }
 
     stdout: StdioCollector { waitForEnd: true }
+  }
+
+  property string caldavSetupSecret: ""
+  Process {
+    id: caldavSetupProc
+    running: false
+    stdinEnabled: true
+    onStarted: {
+      write(caldavSetupSecret + "\n")
+      caldavSetupSecret = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector { id: caldavSetupOut; waitForEnd: true }
+    stderr: StdioCollector { id: caldavSetupErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.finishSetupCaldav(root.helperText(caldavSetupOut.text, caldavSetupErr.text), exitCode)
+    }
   }
 
   Process {
