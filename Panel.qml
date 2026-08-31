@@ -37,7 +37,7 @@ Panel {
   property string viewMode: "tasks"
   property string selectedKey: todayKey
   property bool showingSettings: false
-  property bool showDayPanel: setting("showDayPanel", true) !== false
+
   property date now: new Date()
 
   function open() {
@@ -79,10 +79,6 @@ Panel {
     if (root.hostWidget && "settings" in root.hostWidget) root.hostWidget.settings = entry
     if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
       root.bar.shell.updateEntryInline(root.moduleName, entry)
-  }
-
-  function toggleDayPanel() {
-    persistSettings({ showDayPanel: !root.showDayPanel })
   }
 
   function toggleSettings() {
@@ -152,22 +148,11 @@ Panel {
 
               Row {
                 id: actionControls
-                anchors.right: dayPanelToggle.left
+                anchors.right: settingsTopButton.left
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
                 Button { id: syncButton; text: "Sync"; tooltipText: "Sync now"; onClicked: root.refresh() }
-              }
-
-              PanelActionButton {
-                id: dayPanelToggle
-                anchors.right: settingsTopButton.left
-                anchors.rightMargin: Style.space(4)
-                anchors.verticalCenter: parent.verticalCenter
-                iconText: "\uebf4"
-                tooltipText: root.showDayPanel ? "Hide side panel" : "Show side panel"
-                bordered: root.showDayPanel
-                onClicked: root.toggleDayPanel()
               }
 
               PanelActionButton {
