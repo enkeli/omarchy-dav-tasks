@@ -427,8 +427,7 @@ Item {
     if (exitCode === 0 && payload.ok) {
       caldavSetupStatus = "success"
       caldavSetupMessage = ""
-      root.calendars = payload.calendars || []
-      root.cachedCalendars = payload.calendars || []
+      listCalendars()
       listTasks(true)
     } else {
       caldavSetupStatus = "error"
