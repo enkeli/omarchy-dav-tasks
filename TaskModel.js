@@ -144,6 +144,59 @@ function formatCompletedDate(task, timeFormat) {
   return month + ' ' + day + ', ' + year
 }
 
+var DEFAULT_CALENDAR_COLORS = ['#8aadf4', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7', '#94e2d5', '#fab387', '#89dceb', '#f2cdcd', '#b4befe']
+
+function canRemoveCalendar(calendar) {
+  return String(calendar && calendar.id || '').indexOf('omarchy-calendar-') === 0
+}
+
+function providerLabel(provider, host) {
+  var hostname = String(host || '').toLowerCase().replace(/^www\./, '')
+  if (hostname) {
+    var labels = hostname.split('.')
+    if (labels[0] === 'caldav' || labels[0] === 'carddav' || labels[0] === 'dav') labels = labels.slice(1)
+    var domain = labels.slice(-2).join('.')
+    var named = {
+      'icloud.com': 'iCloud',
+      'icloud.com.cn': 'iCloud',
+      'google.com': 'Google',
+      'googleapis.com': 'Google',
+      'fastmail.com': 'Fastmail',
+      'fastmail.fm': 'Fastmail',
+      'yahoo.com': 'Yahoo'
+    }
+    if (named[domain]) return named[domain]
+    if (named[hostname]) return named[hostname]
+    var label = labels[0] || hostname
+    return label.charAt(0).toUpperCase() + label.slice(1)
+  }
+  if (provider === 'caldav') return 'CalDAV'
+  if (provider === 'local') return 'On this computer'
+  if (provider === 'gnome-online-accounts') return 'Online account'
+  return 'Local'
+}
+
+function calendarDisplayName(calendar, names) {
+  if (!calendar) return 'Calendar'
+  var overrides = names || {}
+  var override = overrides[calendar.id]
+  if (override) return String(override)
+  return plainDisplay(calendar.name || 'Calendar', 120) || 'Calendar'
+}
+
+function calendarDisplayColor(calendar, colors, index) {
+  if (!calendar) return DEFAULT_CALENDAR_COLORS[0]
+  var overrides = colors || {}
+  if (overrides[calendar.id]) return String(overrides[calendar.id])
+  if (calendar.color) return String(calendar.color)
+  return DEFAULT_CALENDAR_COLORS[Math.abs(index || 0) % DEFAULT_CALENDAR_COLORS.length]
+}
+
+function calendarChoiceLabel(calendar, names) {
+  if (!calendar) return 'Calendar'
+  return calendarDisplayName(calendar, names) + ' · ' + providerLabel(calendar.provider, calendar.host)
+}
+
 if (typeof module !== 'undefined') module.exports = {
   isCompleted,
   isOverdue,
@@ -155,5 +208,11 @@ if (typeof module !== 'undefined') module.exports = {
   normalizedTask,
   parseHelperResponse,
   formatDueDate,
-  formatCompletedDate
+  formatCompletedDate,
+  canRemoveCalendar,
+  providerLabel,
+  calendarDisplayName,
+  calendarDisplayColor,
+  calendarChoiceLabel,
+  DEFAULT_CALENDAR_COLORS
 }

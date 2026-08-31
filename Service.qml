@@ -33,6 +33,10 @@ Item {
   property string pendingDeleteUid: ""
   property string moduleName: "dev.enkeli.nextcloud.tasks"
 
+  // Calendar removal properties
+  property string pendingRemoveId: ""
+  property string removeError: ""
+
   // CalDAV setup properties
   property string caldavSetupStatus: "idle"
   property string caldavSetupMessage: ""
@@ -377,6 +381,32 @@ Item {
     return "Calendar"
   }
 
+  // ===== Calendar Removal =====
+
+  function removeCalendar(calendarId) {
+    var id = String(calendarId || "")
+    if (!id || removeProc.running || pendingRemoveId) return
+    pendingRemoveId = id
+    removeError = ""
+    removeProc.command = [helperPath(), "remove-calendar", "--provider", provider, "--calendar-id", id]
+    removeProc.running = true
+  }
+
+  function finishRemoveCalendar(text, exitCode) {
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      var id = pendingRemoveId
+      root.cachedCalendars = cachedCalendars.filter(function(cal) { return cal && cal.id !== id })
+      root.calendars = root.cachedCalendars
+      pendingRemoveId = ""
+      removeError = ""
+      listTasks(true)
+    } else {
+      removeError = failMessage(payload, "Could not remove calendar.")
+      pendingRemoveId = ""
+    }
+  }
+
   // ===== CalDAV Setup =====
 
   function setupCaldav(displayName, url, username, password) {
@@ -506,6 +536,18 @@ Item {
 
     onExited: function(exitCode) {
       root.finishDeleteTask(root.helperText(tasksDeleteOut.text, tasksDeleteErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: removeProc
+    running: false
+
+    stdout: StdioCollector { id: removeOut; waitForEnd: true }
+    stderr: StdioCollector { id: removeErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishRemoveCalendar(root.helperText(removeOut.text, removeErr.text), exitCode)
     }
   }
 
