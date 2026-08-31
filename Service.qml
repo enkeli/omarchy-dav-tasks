@@ -476,4 +476,30 @@ Item {
       root.refreshed()
     }
   }
+
+  Process {
+    id: rightAnchorProc
+    running: false
+    stdout: StdioCollector { id: rightAnchorOut; waitForEnd: true }
+    stderr: StdioCollector { id: rightAnchorErr; waitForEnd: true }
+    onStarted: console.log("[tasks-widget] ensure-right-anchor started", command)
+    onExited: function(exitCode) {
+      console.log("[tasks-widget] ensure-right-anchor exited", exitCode,
+        "stdout=", rightAnchorOut.text,
+        "stderr=", rightAnchorErr.text)
+    }
+  }
+
+  function ensureRightAnchor() {
+    console.log("[tasks-widget] ensureRightAnchor helper=", helperPath(), "running=", rightAnchorProc.running)
+    if (!rightAnchorProc.running) {
+      rightAnchorProc.command = [helperPath(), "ensure-right-anchor", "--title", root.moduleName]
+      rightAnchorProc.running = true
+    }
+  }
+
+  Component.onCompleted: {
+    console.log("[tasks-widget] Service.onCompleted moduleName=", root.moduleName)
+    Qt.callLater(ensureRightAnchor)
+  }
 }

@@ -97,6 +97,12 @@ Panel {
     }
   }
 
+  function ensureRightAnchor() {
+    console.log("[tasks-widget] Panel.ensureRightAnchor service=", calendarService ? "ok" : "null")
+    if (calendarService && typeof calendarService.ensureRightAnchor === "function")
+      calendarService.ensureRightAnchor()
+  }
+
   Timer {
     interval: 10000
     running: root.opened

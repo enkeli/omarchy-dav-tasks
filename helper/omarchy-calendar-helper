@@ -1963,7 +1963,8 @@ def _write_shell_config(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def ensure_center_anchor(plugin_id: str) -> dict:
+def ensure_right_anchor(plugin_id: str) -> dict:
+    """Ensure the plugin appears in the right bar section (idempotent, no clock interference)."""
     plugin_id = str(plugin_id or "").strip()
     path = shell_config_path()
     if not plugin_id or not path.is_file():
@@ -1977,39 +1978,24 @@ def ensure_center_anchor(plugin_id: str) -> dict:
         return {"ok": True, "changed": False}
     layout = bar.get("layout")
     if not isinstance(layout, dict):
-        return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
+        layout = {}
+        bar["layout"] = layout
 
-    sections = ("left", "center", "right")
-    plugin_present = False
-    for section in sections:
-        entries = layout.get(section)
-        if isinstance(entries, list) and plugin_id in [_bar_entry_id(entry) for entry in entries]:
-            plugin_present = True
-            break
-    if not plugin_present:
-        return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
+    right_entries = layout.get("right")
+    if not isinstance(right_entries, list):
+        right_entries = []
+        layout["right"] = right_entries
 
-    changed = False
-    for section in sections:
-        entries = layout.get(section)
-        if not isinstance(entries, list):
-            continue
-        kept = [entry for entry in entries if _bar_entry_id(entry) != "omarchy.clock"]
-        if len(kept) != len(entries):
-            layout[section] = kept
-            changed = True
+    existing_ids = [_bar_entry_id(e) for e in right_entries]
+    print(f"[tasks-widget] ensure_right_anchor path={path} plugin_id={plugin_id} right={existing_ids}", file=sys.stderr)
+    if plugin_id not in existing_ids:
+        right_entries.append({"id": plugin_id})
+        _write_shell_config(path, data)
+        print(f"[tasks-widget] ensure_right_anchor wrote {plugin_id} into right", file=sys.stderr)
+        return {"ok": True, "changed": True}
 
-    stale_anchors = {"omarchy.clock", "sirwizardlizard.calendar"}
-    anchor = str(bar.get("centerAnchor") or "")
-    if anchor in stale_anchors:
-        bar["centerAnchor"] = plugin_id
-        changed = True
-
-    if not changed:
-        return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
-
-    _write_shell_config(path, data)
-    return {"ok": True, "changed": True, "centerAnchor": str(bar.get("centerAnchor") or "")}
+    print("[tasks-widget] ensure_right_anchor already present", file=sys.stderr)
+    return {"ok": True, "changed": False}
 
 
 def reminders_file() -> Path:
@@ -2541,7 +2527,7 @@ def remove_cache_event(event_id: str) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
@@ -2653,6 +2639,8 @@ def main(argv: list[str]) -> int:
             payload = json.loads(raw or "{}")
             write_tasks_cache(payload)
             return emit_json({"ok": True, "provider": payload.get("provider") or args.provider})
+        if args.operation == "ensure-right-anchor":
+            return emit_json(ensure_right_anchor(args.title))
     except Exception as error:
         return emit_json({"ok": False, "provider": args.provider, "error": {"code": "operation-failed", "message": str(error)}})
 
