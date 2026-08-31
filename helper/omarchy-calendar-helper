@@ -457,6 +457,9 @@ def component_task(component, calendar: dict, modules: EdsModules | None = None,
         percent = int(component.get_percent_complete() or 0)
     except (TypeError, ValueError):
         percent = 0
+    # EDS sometimes returns empty status for completed tasks; infer from percent
+    if percent == 100 and status != "completed":
+        status = "completed"
     priority = 0
     try:
         priority = int(component.get_priority() or 0)
