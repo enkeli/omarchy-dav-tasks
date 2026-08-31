@@ -110,13 +110,6 @@ Panel {
     onTriggered: root.now = new Date()
   }
 
-  Timer {
-    interval: 20000
-    running: root.opened
-    repeat: true
-    onTriggered: { if (calendarService) calendarService.pollRemote() }
-  }
-
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -145,7 +138,7 @@ Panel {
         Item {
           id: contentWrap
           width: calendarScroll.width
-          height: calendarColumn.implicitHeight
+          height: calendarColumn.implicitHeight + (root.showingSettings ? settingsColumn.implicitHeight : 0)
 
           Column {
             id: calendarColumn
@@ -190,10 +183,72 @@ Panel {
 
             TasksView {
               id: tasksViewRoot
+              visible: !root.showingSettings
               width: parent.width
               calendarService: root.calendarService
               viewMode: root.viewMode
               opened: root.opened
+            }
+          }
+
+          Column {
+            id: settingsColumn
+            visible: root.showingSettings
+            anchors.top: calendarColumn.bottom
+            width: Math.min(parent.width, Style.space(820))
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(4)
+
+            PanelSectionHeader { text: "CalDAV Server" }
+
+            TextField {
+              id: urlField
+              width: parent.width
+              placeholderText: "https://caldav.example.com/dav/"
+            }
+
+            TextField {
+              id: userField
+              width: parent.width
+              placeholderText: "Username"
+            }
+
+            TextField {
+              id: passField
+              width: parent.width
+              placeholderText: "Password"
+              password: true
+            }
+
+            Button {
+              text: calendarService && calendarService.caldavSetupStatus === "connecting" ? "Connecting..." : "Connect"
+              enabled: calendarService && calendarService.caldavSetupStatus !== "connecting" && urlField.text !== "" && userField.text !== "" && passField.text !== ""
+              onClicked: calendarService.setupCaldav("Nextcloud", urlField.text, userField.text, passField.text)
+            }
+
+            Text {
+              visible: calendarService && calendarService.caldavSetupStatus === "connecting"
+              text: "Connecting to CalDAV server..."
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              visible: calendarService && calendarService.caldavSetupStatus === "error" && calendarService.caldavSetupMessage !== ""
+              text: calendarService ? calendarService.caldavSetupMessage : ""
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: calendarService && calendarService.caldavSetupStatus === "success"
+              text: "Connected successfully! Calendars discovered."
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
             }
           }
         }
