@@ -380,7 +380,7 @@ Panel {
     Button {
       id: removeCalendarButton
       visible: settingsCalendarRow.removable
-      enabled: !calendarService || !calendarService.pendingRemoveId
+      enabled: calendarService && !calendarService.pendingRemoveId
       anchors.verticalCenter: parent.verticalCenter
       text: calendarService && calendarService.pendingRemoveId === settingsCalendarRow.calendarId ? "Removing" : "Remove"
       bordered: true
