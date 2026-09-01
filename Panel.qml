@@ -164,6 +164,11 @@ Panel {
                   selected: tasksViewRoot.activeTab === "done"
                   onClicked: tasksViewRoot.activeTab = "done"
                 }
+                ViewButton {
+                  text: "Config"
+                  selected: tasksViewRoot.activeTab === "config"
+                  onClicked: tasksViewRoot.activeTab = "config"
+                }
               }
 
               Row {
