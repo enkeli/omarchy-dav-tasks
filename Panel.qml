@@ -37,7 +37,6 @@ Panel {
   readonly property string todayKey: keyForDate(today)
   property string viewMode: "tasks"
   property string selectedKey: todayKey
-  property bool showingSettings: false
 
   property date now: new Date()
 
@@ -80,10 +79,6 @@ Panel {
     if (root.hostWidget && "settings" in root.hostWidget) root.hostWidget.settings = entry
     if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
       root.bar.shell.updateEntryInline(root.moduleName, entry)
-  }
-
-  function toggleSettings() {
-    root.showingSettings = !root.showingSettings
   }
 
   function refresh() {
@@ -135,7 +130,7 @@ Panel {
         Item {
           id: contentWrap
           width: calendarScroll.width
-          height: calendarColumn.implicitHeight + (root.showingSettings ? settingsColumn.implicitHeight : 0)
+          height: calendarColumn.implicitHeight
 
           Column {
             id: calendarColumn
@@ -145,11 +140,10 @@ Panel {
 
             Item {
               width: parent.width
-              height: Math.max(tabControls.implicitHeight, actionControls.implicitHeight, settingsTopButton.implicitHeight)
+              height: Math.max(tabControls.implicitHeight, actionControls.implicitHeight)
 
               Row {
                 id: tabControls
-                visible: !root.showingSettings
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(4)
@@ -173,125 +167,20 @@ Panel {
 
               Row {
                 id: actionControls
-                anchors.right: settingsTopButton.left
+                anchors.right: parent.right
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
                 Button { id: syncButton; text: "Sync"; tooltipText: "Sync now"; onClicked: root.refresh() }
               }
-
-              PanelActionButton {
-                id: settingsTopButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                iconText: "󰒓"
-                tooltipText: root.showingSettings ? "Close settings" : "Settings"
-                bordered: root.showingSettings
-                onClicked: root.toggleSettings()
-              }
             }
 
             TasksView {
               id: tasksViewRoot
-              visible: !root.showingSettings
               width: parent.width
               calendarService: root.calendarService
               viewMode: root.viewMode
               opened: root.opened
-            }
-          }
-
-          Column {
-            id: settingsColumn
-            visible: root.showingSettings
-            anchors.top: calendarColumn.bottom
-            width: Math.min(parent.width, Style.space(820))
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(4)
-
-            PanelSectionHeader {
-              text: "Configured Accounts"
-              visible: calendarService && calendarService.calendars && calendarService.calendars.length > 0
-            }
-
-            Repeater {
-              model: calendarService ? calendarService.calendars : []
-              visible: calendarService && calendarService.calendars && calendarService.calendars.length > 0
-              SettingsCalendarRow {
-                required property var modelData
-                required property int index
-                calendar: modelData
-                calendarIndex: index
-              }
-            }
-
-            Text {
-              visible: calendarService && calendarService.pendingRemoveId
-              text: "Removing…"
-              color: Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
-            }
-
-            Text {
-              visible: calendarService && calendarService.removeError && calendarService.removeError !== ""
-              text: calendarService ? calendarService.removeError : ""
-              color: Color.urgent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
-
-            PanelSectionHeader { text: "CalDAV Server" }
-
-            TextField {
-              id: urlField
-              width: parent.width
-              placeholderText: "https://caldav.example.com/dav/"
-            }
-
-            TextField {
-              id: userField
-              width: parent.width
-              placeholderText: "Username"
-            }
-
-            TextField {
-              id: passField
-              width: parent.width
-              placeholderText: "Password"
-              password: true
-            }
-
-            Button {
-              text: calendarService && calendarService.caldavSetupStatus === "connecting" ? "Connecting..." : "Connect"
-              enabled: calendarService && calendarService.caldavSetupStatus !== "connecting" && urlField.text !== "" && userField.text !== "" && passField.text !== ""
-              onClicked: calendarService.setupCaldav("Nextcloud", urlField.text, userField.text, passField.text)
-            }
-
-            Text {
-              visible: calendarService && calendarService.caldavSetupStatus === "connecting"
-              text: "Connecting to CalDAV server..."
-              color: Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
-            }
-
-            Text {
-              visible: calendarService && calendarService.caldavSetupStatus === "error" && calendarService.caldavSetupMessage !== ""
-              text: calendarService ? calendarService.caldavSetupMessage : ""
-              color: Color.urgent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
-
-            Text {
-              visible: calendarService && calendarService.caldavSetupStatus === "success"
-              text: "Connected successfully! Calendars discovered."
-              color: Color.accent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
             }
           }
         }
