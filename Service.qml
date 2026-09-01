@@ -127,8 +127,10 @@ Item {
   function applyTaskCache(tasks, cals) {
     console.log("[Service] applyTaskCache tasks:", tasks ? tasks.length : 0, "cals:", cals ? cals.length : 0)
     root.cachedTasks = tasks
-    root.cachedCalendars = cals || root.cachedCalendars
-    root.calendars = root.cachedCalendars
+    if (cals && cals.length > 0) {
+      root.cachedCalendars = cals
+      root.calendars = root.cachedCalendars
+    }
     root.allTasks = tasks
     root.pendingTasks = tasks.filter(function(task) { return TaskModel.isPending(task) })
     root.doneTasks = tasks.filter(function(task) { return TaskModel.isCompleted(task) })
