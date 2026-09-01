@@ -158,11 +158,6 @@ Panel {
                   selected: tasksViewRoot.activeTab === "done"
                   onClicked: tasksViewRoot.activeTab = "done"
                 }
-                ViewButton {
-                  text: "Config"
-                  selected: tasksViewRoot.activeTab === "config"
-                  onClicked: tasksViewRoot.activeTab = "config"
-                }
               }
 
               Row {
@@ -172,6 +167,12 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
                 Button { id: syncButton; text: "Sync"; tooltipText: "Sync now"; onClicked: root.refresh() }
+                PanelActionButton {
+                  iconText: "󰒓"
+                  tooltipText: "Config"
+                  selected: tasksViewRoot.activeTab === "config"
+                  onClicked: tasksViewRoot.activeTab = tasksViewRoot.activeTab === "config" ? "pending" : "config"
+                }
               }
             }
 
