@@ -326,6 +326,80 @@ Column {
       font.pixelSize: Style.font.bodySmall
       textFormat: Text.PlainText
     }
+
+    Text {
+      width: parent.width
+      text: "CalDAV Server"
+      color: Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      font.bold: true
+    }
+
+    TextField {
+      id: caldavUrlField
+      width: parent.width
+      placeholderText: "https://caldav.example.com/dav/"
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    TextField {
+      id: caldavUsernameField
+      width: parent.width
+      placeholderText: "Username"
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    TextField {
+      id: caldavPasswordField
+      width: parent.width
+      placeholderText: "Password"
+      password: true
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    Button {
+      text: calendarService && calendarService.caldavSetupStatus === "connecting" ? "Connecting..." : "Connect"
+      enabled: calendarService && calendarService.caldavSetupStatus !== "connecting"
+      onClicked: {
+        if (calendarService) {
+          calendarService.setupCaldav("", caldavUrlField.text, caldavUsernameField.text, caldavPasswordField.text)
+        }
+      }
+    }
+
+    Text {
+      visible: calendarService && calendarService.caldavSetupStatus === "connecting"
+      width: parent.width
+      text: "Connecting to CalDAV server..."
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    Text {
+      visible: calendarService && calendarService.caldavSetupStatus === "error"
+      width: parent.width
+      text: calendarService ? calendarService.caldavSetupMessage : ""
+      color: Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    Text {
+      visible: calendarService && calendarService.caldavSetupStatus === "success"
+      width: parent.width
+      text: "Connected successfully"
+      color: Color.accent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
   }
 
   // --- Service signal connections ---
