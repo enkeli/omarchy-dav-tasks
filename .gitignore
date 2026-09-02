@@ -5,3 +5,6 @@ node_modules/
 .DS_Store
 *.log
 .omo/
+.opencode/
+.opencode/
+.opencode/
