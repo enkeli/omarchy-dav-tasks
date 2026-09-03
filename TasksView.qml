@@ -82,6 +82,7 @@ Column {
     property bool showOverdue: false
     property string dateLabel: "due"
 
+    readonly property color taskCalendarColor: taskItem.task && taskItem.task.calendarColor ? taskItem.task.calendarColor : Color.muted
     readonly property bool overdue: taskItem.showOverdue && taskItem.task && TaskModel.isOverdue(taskItem.task, tasksView.now)
     readonly property string dateText: {
       if (!taskItem.task) return ""
@@ -182,7 +183,7 @@ Column {
             visible: calendarNameText.visible
             width: visible ? implicitWidth : 0
             text: "\uf073"
-            color: Color.muted
+            color: taskItem.taskCalendarColor
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             textFormat: Text.PlainText
@@ -193,7 +194,7 @@ Column {
             visible: taskItem.task && taskItem.task.calendarName
             width: visible ? Math.max(0, parent.width - (tagIcon.visible ? tagIcon.width + parent.spacing : 0) - (tagText.visible ? tagText.width + parent.spacing : 0) - (separatorDot.visible ? separatorDot.width + parent.spacing : 0) - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)) : 0
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
-            color: Color.muted
+            color: taskItem.taskCalendarColor
             elide: Text.ElideRight
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
