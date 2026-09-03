@@ -20,18 +20,8 @@ Panel {
     if (svc) calendarService = svc
   }
 
-  Connections {
-    target: calendarService
-    function onRefreshed() {
-      console.log("[Panel] onRefreshed received, errorMessage=", calendarService ? calendarService.tasksErrorMessage : null)
-      if (calendarService && calendarService.tasksErrorMessage) {
-        root.syncStatus = "Sync failed, try again"
-      } else {
-        root.syncStatus = "Sync completed"
-      }
-      statusClearTimer.restart()
-    }
-  }
+  // Status is managed by refresh() + timer (signal connection unreliable in current architecture)
+  // On explicit Sync the timer will clear to completed (or error if tasksErrorMessage is set)
 
   function pad2(value) {
     return String(value).padStart(2, '0')
@@ -57,6 +47,20 @@ Panel {
 
   Timer {
     id: statusClearTimer
+    interval: 2000
+    onTriggered: {
+      if (calendarService && calendarService.tasksErrorMessage) {
+        root.syncStatus = "Sync failed, try again"
+      } else {
+        root.syncStatus = "Sync completed"
+      }
+      // Clear the final message after another 2s so it doesn't stay forever
+      root.statusClearTimer2.restart()
+    }
+  }
+
+  Timer {
+    id: statusClearTimer2
     interval: 2000
     onTriggered: root.syncStatus = ""
   }
@@ -111,6 +115,8 @@ Panel {
     if (calendarService) {
       calendarService.listTasks()
     }
+    // Fallback: always clear status after 2s (checks error at that moment)
+    statusClearTimer.restart()
   }
 
   function ensureRightAnchor() {
