@@ -381,6 +381,7 @@ Column {
 
         Button {
           text: calendarService && calendarService.caldavSetupStatus === "connecting" ? "Connecting..." : "Connect"
+          bordered: true
           enabled: calendarService && calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
             if (calendarService) {
@@ -391,7 +392,6 @@ Column {
 
         Button {
           text: "Cancel"
-          bordered: true
           enabled: !calendarService || calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
             caldavUrlField.text = ""
