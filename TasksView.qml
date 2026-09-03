@@ -141,7 +141,7 @@ Column {
         Row {
           id: metaRow
           width: parent.width
-          spacing: Style.space(3)
+          spacing: Style.space(1)
 
           Text {
             id: calendarIcon
