@@ -88,9 +88,6 @@ BarWidget {
     verticalPadding: 8.75
     tooltipText: "Nextcloud Tasks"
 
-    onPressed: function(b) {
-      console.log("[tasks-widget] button pressed", b)
-      root.togglePanel()
-    }
+    onClicked: root.togglePanel()
   }
 }
