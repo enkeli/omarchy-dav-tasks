@@ -8,3 +8,4 @@ node_modules/
 .opencode/
 .opencode/
 .opencode/
+*.local.sh
