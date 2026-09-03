@@ -54,7 +54,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "\uf00c"
-    labelVisible: false
+    labelVisible: true
     hasVisualContent: true
 
     onPressed: function(b) {
