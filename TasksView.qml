@@ -40,10 +40,16 @@ Column {
     Text {
       width: parent.width
       text: taskSection.title
-      color: Color.foreground
+      color: Color.accent
       font.family: Style.font.family
       font.pixelSize: Style.font.body
       font.bold: true
+    }
+
+    Rectangle {
+      width: parent.width
+      height: 1
+      color: Color.accent
     }
 
     Repeater {
