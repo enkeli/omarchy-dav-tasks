@@ -157,7 +157,15 @@ Column {
           Text {
             id: calendarNameText
             visible: taskItem.task && taskItem.task.calendarName
-            width: visible ? Math.max(0, parent.width - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0) - (separatorDot.visible ? separatorDot.width + parent.spacing : 0) - (tagIcon.visible ? tagIcon.width + parent.spacing : 0) - (tagText.visible ? tagText.width + parent.spacing : 0)) : 0
+            // Content-sized first block: take only the width the calendar name needs,
+            // but elide when the tag block leaves less room than that.
+            width: visible ? Math.max(0, Math.min(implicitWidth,
+                parent.width
+                - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)
+                - (separatorDot.visible ? separatorDot.width + parent.spacing : 0)
+                - (tagIcon.visible ? tagIcon.width + parent.spacing : 0)
+                - (tagText.visible ? tagText.width + parent.spacing : 0)
+                + parent.spacing)) : 0
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
             color: taskItem.taskCalendarColor
             elide: Text.ElideRight
