@@ -55,6 +55,52 @@ echo "ok - helper update-event validates uid"
 
 python3 -c 'from importlib.machinery import SourceFileLoader; import sys; mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module(); assert mod.normalize_rrule("never") == ""; assert mod.normalize_rrule("weekly") == "FREQ=WEEKLY"; assert mod.normalize_rrule("FREQ=WEEKLY;BYDAY=TU,TH") == "FREQ=WEEKLY;BYDAY=TU,TH"; assert mod.normalize_rrule("RRULE:FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1") == "FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1"; print("ok - helper rrule normalize")' "$ROOT/helper/omarchy-calendar-helper"
 
+python3 -c 'from importlib.machinery import SourceFileLoader; import sys
+mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
+class Component:
+    def __init__(self, listed=None, legacy=""):
+        self.listed = listed
+        self.legacy = legacy
+    def get_categories_list(self):
+        return self.listed
+    def get_categories(self):
+        return self.legacy
+    def get_uid(self):
+        return "task-1"
+    def get_summary(self):
+        return "Tagged task"
+    def get_descriptions(self):
+        return []
+    def get_status(self):
+        return "NEEDS-ACTION"
+    def get_due(self):
+        return None
+    def get_dtstart(self):
+        return None
+    def get_completed(self):
+        return None
+    def get_percent_complete(self):
+        return 0
+    def get_priority(self):
+        return 0
+    def get_dtstamp(self):
+        return None
+calendar = {"id": "cal", "name": "Tasks", "color": "#000", "provider": "eds", "source": "x"}
+listed = Component(["Work", "Personal\\,Home", "bad\x00value"], "ignored")
+assert mod.extract_categories(listed) == ["Work", "Personal,Home", "badvalue"]
+assert mod.component_task(listed, calendar)["categories"] == ["Work", "Personal,Home", "badvalue"]
+fallback = Component(None, "Work\\,Home,Err")
+assert mod.extract_categories(fallback) == ["Work,Home", "Err"]
+class RaisingComponent(Component):
+    def get_categories_list(self):
+        raise RuntimeError("list API unavailable")
+assert mod.extract_categories(RaisingComponent(None, "Fallback")) == ["Fallback"]
+long = Component(["x" * (mod.MAX_TASK_CATEGORY_LENGTH + 10)] * (mod.MAX_TASK_CATEGORIES + 4))
+categories = mod.extract_categories(long)
+assert len(categories) == mod.MAX_TASK_CATEGORIES
+assert all(len(category) == mod.MAX_TASK_CATEGORY_LENGTH for category in categories)
+print("ok - helper extract task categories")' "$ROOT/helper/omarchy-calendar-helper"
+
 python3 -c 'from importlib.machinery import SourceFileLoader; import sys; mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
 class C:
     def as_ical_string(self):

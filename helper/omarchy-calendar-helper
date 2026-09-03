@@ -30,6 +30,8 @@ MAX_ERROR_BYTES = 64 * 1024
 MAX_EVENTS = 8000
 MAX_CALENDARS = 200
 MAX_FIRED = 2000
+MAX_TASK_CATEGORIES = 32
+MAX_TASK_CATEGORY_LENGTH = 120
 
 
 def read_limited_text(path: Path, max_bytes: int) -> str | None:
@@ -266,6 +268,101 @@ def text_value(value) -> str:
     return str(value or "")
 
 
+def unescape_ical_text(value: str) -> str:
+    result = []
+    escaped = False
+    for char in str(value or ""):
+        if escaped:
+            if char in "nN":
+                result.append("\n")
+            elif char in "\\,;":
+                result.append(char)
+            else:
+                result.extend(["\\", char])
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        else:
+            result.append(char)
+    if escaped:
+        result.append("\\")
+    return "".join(result)
+
+
+def split_ical_categories(value: str) -> list[str]:
+    categories = []
+    current = []
+    escaped = False
+    for char in str(value or ""):
+        if escaped:
+            if char in "nN":
+                current.append("\n")
+            elif char in "\\,;":
+                current.append(char)
+            else:
+                current.extend(["\\", char])
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ",":
+            categories.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    categories.append("".join(current))
+    return categories
+
+
+def sanitize_task_categories(values) -> list[str]:
+    result = []
+    for value in values or []:
+        category = unescape_ical_text(text_value(value)).strip()
+        category = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", category)
+        if category:
+            result.append(category[:MAX_TASK_CATEGORY_LENGTH])
+        if len(result) >= MAX_TASK_CATEGORIES:
+            break
+    return result
+
+
+def extract_categories(component) -> list[str]:
+    """Read and sanitize VTODO categories without requiring write support."""
+    values = None
+    categories_list = getattr(component, "get_categories_list", None)
+    if callable(categories_list):
+        try:
+            values = categories_list()
+        except Exception:
+            values = None
+        if isinstance(values, str):
+            return sanitize_task_categories(split_ical_categories(values))
+        if values is not None:
+            try:
+                values = list(values)
+            except TypeError:
+                values = None
+            if values:
+                return sanitize_task_categories(values)
+
+    categories = getattr(component, "get_categories", None)
+    if callable(categories):
+        try:
+            values = categories()
+        except Exception:
+            values = None
+        if isinstance(values, str):
+            values = split_ical_categories(values)
+        elif values is not None:
+            try:
+                values = list(values)
+            except TypeError:
+                values = []
+        return sanitize_task_categories(values or [])
+    return []
+
+
 def resolve_ical_timezone(modules: EdsModules, tzid: str, client=None):
     name = str(tzid or "").strip()
     if not name:
@@ -440,6 +537,7 @@ def component_task(component, calendar: dict, modules: EdsModules | None = None,
     summary = text_value(component.get_summary()) or "(No title)"
     descriptions = component.get_descriptions() or []
     description = text_value(descriptions[0]) if descriptions else ""
+    categories = extract_categories(component)
     status_raw = str(component.get_status() or "").upper()
     status_map = {
         "NEEDS-ACTION": "needs-action",
@@ -479,6 +577,7 @@ def component_task(component, calendar: dict, modules: EdsModules | None = None,
         "calendarColor": calendar["color"],
         "title": summary,
         "description": description,
+        "categories": categories,
         "due": due,
         "dueAllDay": due_all_day,
         "start": dtstart,

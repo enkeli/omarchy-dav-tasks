@@ -14,6 +14,8 @@ assert.equal(model.normalizedTask({ uid: 'u2' }).id, 'u2')
 assert.equal(model.normalizedTask({ title: '<script>alert(1)</script>Clean' }).title, 'alert(1)Clean')
 assert.equal(model.normalizedTask({ calendar_uid: 'cal1', calendarName: 'Cal 1' }).calendarId, 'cal1')
 assert.equal(model.normalizedTask({ calendar: 'Cal 2' }).calendarName, 'Cal 2')
+assert.deepEqual(model.normalizedTask({ categories: ['Work', 'Personal'] }).categories, ['Work', 'Personal'])
+assert.deepEqual(model.normalizedTask({ categories: 'Work' }).categories, [])
 
 // normalizeTasks
 assert.deepEqual(model.normalizeTasks(null), [])
@@ -101,6 +103,9 @@ assert.equal(okResponse.provider, 'eds')
 assert.equal(okResponse.tasks.length, 1)
 assert.equal(okResponse.tasks[0].id, '1')
 assert.equal(okResponse.error, null)
+
+const categorizedResponse = model.parseHelperResponse(JSON.stringify({ ok: true, tasks: [{ id: '1', categories: ['Work', 'Personal'] }] }))
+assert.deepEqual(categorizedResponse.tasks[0].categories, ['Work', 'Personal'])
 
 const badResponse = model.parseHelperResponse('{')
 assert.equal(badResponse.ok, false)
