@@ -331,6 +331,7 @@ Column {
       id: connectServerButton
       visible: !caldavForm.visible
       text: "Connect Server"
+      bordered: true
       onClicked: caldavForm.visible = true
     }
 
