@@ -296,13 +296,24 @@ Column {
     width: parent.width
     spacing: Style.space(8)
 
-    Text {
+    Column {
       width: parent.width
-      text: "Calendars"
-      color: Color.foreground
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      font.bold: true
+      spacing: Style.space(2)
+
+      Text {
+        width: parent.width
+        text: "Calendars"
+        color: Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Util.alpha(Color.foreground, 0.35)
+      }
     }
 
     Repeater {
