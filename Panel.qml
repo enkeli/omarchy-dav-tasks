@@ -19,6 +19,18 @@ Panel {
     return service
   }
 
+  Connections {
+    target: calendarService
+    function onRefreshed() {
+      if (calendarService && calendarService.tasksErrorMessage) {
+        root.syncStatus = "Sync failed, try again"
+      } else {
+        root.syncStatus = "Sync completed"
+      }
+      statusClearTimer.restart()
+    }
+  }
+
   function pad2(value) {
     return String(value).padStart(2, '0')
   }
@@ -39,6 +51,13 @@ Panel {
   property string selectedKey: todayKey
 
   property date now: new Date()
+  property string syncStatus: ""
+
+  Timer {
+    id: statusClearTimer
+    interval: 2000
+    onTriggered: root.syncStatus = ""
+  }
 
   function open() {
     root.now = new Date()
@@ -84,6 +103,7 @@ Panel {
   function refresh() {
     root.today = new Date()
     if (!root.selectedKey) root.selectedKey = root.todayKey
+    root.syncStatus = "Syncing..."
     if (calendarService) {
       calendarService.listTasks()
     }
@@ -158,6 +178,15 @@ Panel {
                   selected: tasksViewRoot.activeTab === "done"
                   onClicked: tasksViewRoot.activeTab = "done"
                 }
+              }
+
+              Text {
+                anchors.centerIn: parent
+                text: root.syncStatus
+                visible: root.syncStatus !== ""
+                color: root.syncStatus.includes("failed") ? "#ff6b6b" : Color.foreground
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.small
               }
 
               Row {
