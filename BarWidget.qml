@@ -81,12 +81,11 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "\uf00c"
+    text: "Tasks"
     labelVisible: true
     hasVisualContent: true
     horizontalMargin: 8.75
     verticalPadding: 8.75
-    tooltipText: "Nextcloud Tasks"
 
     onClicked: root.togglePanel()
   }
