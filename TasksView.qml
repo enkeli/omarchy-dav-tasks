@@ -144,6 +144,41 @@ Column {
           spacing: Style.space(3)
 
           Text {
+            id: calendarIcon
+            visible: calendarNameText.visible
+            width: visible ? implicitWidth : 0
+            text: "\uf073"
+            color: taskItem.taskCalendarColor
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+          }
+
+          Text {
+            id: calendarNameText
+            visible: taskItem.task && taskItem.task.calendarName
+            width: visible ? Math.max(0, parent.width - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0) - (separatorDot.visible ? separatorDot.width + parent.spacing : 0) - (tagIcon.visible ? tagIcon.width + parent.spacing : 0) - (tagText.visible ? tagText.width + parent.spacing : 0)) : 0
+            text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
+            color: taskItem.taskCalendarColor
+            elide: Text.ElideRight
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+          }
+
+          Text {
+            id: separatorDot
+            visible: calendarNameText.visible && tagText.visible
+            width: visible ? implicitWidth : 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: "\u00B7"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+          }
+
+          Text {
             id: tagIcon
             visible: tagText.visible
             width: visible ? implicitWidth : 0
@@ -160,41 +195,6 @@ Column {
             width: visible ? Math.max(0, Math.min(implicitWidth, parent.width * 0.45 - tagIcon.width - parent.spacing)) : 0
             text: visible ? TaskModel.plainDisplay(taskItem.task.categories[0], 40) : ""
             color: Color.muted
-            elide: Text.ElideRight
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            textFormat: Text.PlainText
-          }
-
-          Text {
-            id: separatorDot
-            visible: tagText.visible && calendarNameText.visible
-            width: visible ? implicitWidth : 0
-            anchors.verticalCenter: parent.verticalCenter
-            text: "\u00B7"
-            color: Color.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            textFormat: Text.PlainText
-          }
-
-          Text {
-            id: calendarIcon
-            visible: calendarNameText.visible
-            width: visible ? implicitWidth : 0
-            text: "\uf073"
-            color: taskItem.taskCalendarColor
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            textFormat: Text.PlainText
-          }
-
-          Text {
-            id: calendarNameText
-            visible: taskItem.task && taskItem.task.calendarName
-            width: visible ? Math.max(0, parent.width - (tagIcon.visible ? tagIcon.width + parent.spacing : 0) - (tagText.visible ? tagText.width + parent.spacing : 0) - (separatorDot.visible ? separatorDot.width + parent.spacing : 0) - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)) : 0
-            text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
-            color: taskItem.taskCalendarColor
             elide: Text.ElideRight
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
