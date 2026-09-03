@@ -13,10 +13,11 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
-  readonly property var calendarService: {
-    var service = bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
-    console.log("[Panel] calendarService property evaluated:", service ? "available" : "null")
-    return service
+  property var calendarService: null
+
+  onBarChanged: {
+    var svc = bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
+    if (svc) calendarService = svc
   }
 
   Connections {
