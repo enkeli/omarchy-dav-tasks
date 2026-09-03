@@ -56,6 +56,7 @@ BarWidget {
     text: "\uf00c"
     labelVisible: true
     hasVisualContent: true
+    verticalPadding: 2
 
     onPressed: function(b) {
       root.togglePanel()
