@@ -14,6 +14,8 @@ assert.equal(model.normalizedTask({ uid: 'u2' }).id, 'u2')
 assert.equal(model.normalizedTask({ title: '<script>alert(1)</script>Clean' }).title, 'alert(1)Clean')
 assert.equal(model.normalizedTask({ calendar_uid: 'cal1', calendarName: 'Cal 1' }).calendarId, 'cal1')
 assert.equal(model.normalizedTask({ calendar: 'Cal 2' }).calendarName, 'Cal 2')
+assert.equal(model.normalizedTask({ calendarColor: '#a6e3a1' }).calendarColor, '#a6e3a1')
+assert.equal(model.normalizedTask({}).calendarColor, '')
 assert.deepEqual(model.normalizedTask({ categories: ['Work', 'Personal'] }).categories, ['Work', 'Personal'])
 assert.deepEqual(model.normalizedTask({ categories: 'Work' }).categories, [])
 

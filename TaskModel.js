@@ -28,6 +28,7 @@ function normalizedTask(raw) {
     created: String(task.created || ''),
     calendarId: String(task.calendarId || task.calendar_uid || ''),
     calendarName: plainDisplay(task.calendarName || task.calendar || 'Calendar', 120),
+    calendarColor: String(task.calendarColor || ''),
     description: plainDisplay(task.description, 2000),
     categories: Array.isArray(task.categories) ? task.categories.slice() : []
   }
