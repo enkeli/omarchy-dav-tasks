@@ -204,7 +204,7 @@ Panel {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
-                Button { id: syncButton; text: "Sync"; tooltipText: "Sync now"; onClicked: root.refresh() }
+                Button { id: syncButton; text: "\uf021"; tooltipText: "Sync now"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; onClicked: root.refresh() }
                 ViewButton {
                   text: "󰒓"
                   selected: tasksViewRoot.activeTab === "config"
