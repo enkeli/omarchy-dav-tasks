@@ -23,6 +23,7 @@ Panel {
   Connections {
     target: calendarService
     function onRefreshed() {
+      console.log("[Panel] onRefreshed received, errorMessage=", calendarService ? calendarService.tasksErrorMessage : null)
       if (calendarService && calendarService.tasksErrorMessage) {
         root.syncStatus = "Sync failed, try again"
       } else {
