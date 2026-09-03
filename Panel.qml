@@ -167,9 +167,9 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
                 Button { id: syncButton; text: "Sync"; tooltipText: "Sync now"; onClicked: root.refresh() }
-                PanelActionButton {
-                  iconText: "󰒓"
-                  tooltipText: "Config"
+                ViewButton {
+                  text: "󰒓"
+                  selected: tasksViewRoot.activeTab === "config"
                   onClicked: tasksViewRoot.activeTab = tasksViewRoot.activeTab === "config" ? "pending" : "config"
                 }
               }
