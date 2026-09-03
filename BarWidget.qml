@@ -58,6 +58,7 @@ BarWidget {
     hasVisualContent: true
 
     onPressed: function(b) {
+      console.log("[tasks-widget] onPressed b=", b, "panelItem=", !!panelLoader.item)
       root.togglePanel()
     }
   }
