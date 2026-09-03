@@ -170,7 +170,6 @@ Panel {
                 PanelActionButton {
                   iconText: "󰒓"
                   tooltipText: "Config"
-                  selected: tasksViewRoot.activeTab === "config"
                   onClicked: tasksViewRoot.activeTab = tasksViewRoot.activeTab === "config" ? "pending" : "config"
                 }
               }
