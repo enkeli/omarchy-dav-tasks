@@ -61,7 +61,9 @@ Panel {
 
   function open() {
     root.now = new Date()
-    refresh()
+    // Do not auto-refresh with status on open; only explicit Sync button sets status
+    if (!root.selectedKey) root.selectedKey = root.todayKey
+    if (calendarService) calendarService.listTasks()
     root.controller.show()
     Qt.callLater(function() { if (root.opened) setCenterHoverRevealSuppressed(true) })
   }
