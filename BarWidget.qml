@@ -21,27 +21,8 @@ BarWidget {
   function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
 
-  function logState(reason) {
-    console.log("[tasks-widget] BarWidget", reason,
-      "moduleName=", root.moduleName,
-      "visible=", root.visible,
-      "implicitW=", root.implicitWidth,
-      "implicitH=", root.implicitHeight,
-      "button.text=", button.text,
-      "button.visible=", button.visible,
-      "button.labelVisible=", button.labelVisible,
-      "button.hasVisualContent=", button.hasVisualContent,
-      "button.w=", button.width,
-      "button.h=", button.height,
-      "button.labelWidth=", button.labelWidth,
-      "bar=", root.bar ? "set" : "null",
-      "panelLoaded=", !!panelLoader.item,
-      "loaderStatus=", panelLoader.status)
-  }
-
   function injectPanel() {
     var target = panelLoader.item
-    console.log("[tasks-widget] injectPanel target=", target ? "ok" : "null")
     if (!target) return
     if ("bar" in target) target.bar = root.bar
     if ("settings" in target) target.settings = root.settings
@@ -52,16 +33,7 @@ BarWidget {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  Component.onCompleted: logState("onCompleted")
-  onVisibleChanged: logState("onVisibleChanged")
-  onImplicitWidthChanged: logState("onImplicitWidthChanged")
-
-  onBarChanged: {
-    logState("onBarChanged")
-    injectPanel()
-    if (panelLoader.item && panelLoader.item.ensureRightAnchor)
-      panelLoader.item.ensureRightAnchor()
-  }
+  onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
 
   Loader {
