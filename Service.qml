@@ -31,7 +31,7 @@ Item {
   property string tasksPendingCreateId: ""
   property var tasksPendingUpdateOriginal: null
   property string pendingDeleteUid: ""
-  property string moduleName: "dev.enkeli.nextcloud.tasks"
+  property string moduleName: "dev.enkeli.omarchy-dav-tasks"
 
   // Calendar removal properties
   property string pendingRemoveId: ""

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "dev.enkeli.nextcloud.tasks",
+  "id": "dev.enkeli.omarchy-dav-tasks",
   "name": "Nextcloud Tasks",
   "version": "0.0.6",
-  "author": "dev.enkeli.nextcloud.tasks",
+  "author": "dev.enkeli.omarchy-dav-tasks",
   "license": "MIT",
   "description": "Sync Nextcloud tasks to the Omarchy bar widget.",
   "kinds": ["service", "bar-widget"],

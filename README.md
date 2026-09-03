@@ -17,8 +17,8 @@ omarchy plugin add https://github.com/enkeli/omarchy-dav --enable
 ## Uninstall
 
 ```bash
-omarchy plugin disable dev.enkeli.nextcloud.tasks
-omarchy plugin remove dev.enkeli.nextcloud.tasks
+omarchy plugin disable dev.enkeli.omarchy-dav-tasks
+omarchy plugin remove dev.enkeli.omarchy-dav-tasks
 ```
 
 ## Requirements

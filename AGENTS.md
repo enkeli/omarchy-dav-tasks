@@ -1,6 +1,6 @@
 # Agent instructions
 
-- This is a standalone Omarchy plugin (`dev.enkeli.nextcloud.tasks`), not an Omarchy core checkout; do not edit `/usr/share/omarchy`.
+- This is a standalone Omarchy plugin (`dev.enkeli.omarchy-dav-tasks`), not an Omarchy core checkout; do not edit `/usr/share/omarchy`.
 - Runtime entry points are `Service.qml` (service) and `BarWidget.qml` (bar widget), declared in `manifest.json`; `Panel.qml` owns the popup and `TasksView.qml` owns its task/config views.
 - Keep provider and process logic in `Service.qml`/`helper/omarchy-calendar-helper`, not in QML presentation code; normalize provider data before exposing it to QML.
 - Credentials must stay in the system keyring/stdin flow; never put them in plugin settings, source, logs, or tests.

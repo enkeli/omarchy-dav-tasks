@@ -7,7 +7,7 @@ import "TaskModel.js" as TaskModel
 
 Panel {
   id: root
-  moduleName: "dev.enkeli.nextcloud.tasks"
+  moduleName: "dev.enkeli.omarchy-dav-tasks"
   manageIpc: false
 
   property var anchorItem: null

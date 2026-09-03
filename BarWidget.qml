@@ -5,7 +5,7 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "dev.enkeli.nextcloud.tasks"
+  moduleName: "dev.enkeli.omarchy-dav-tasks"
 
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property real openPanelIndicatorWidth: button.labelWidth
