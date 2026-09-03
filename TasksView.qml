@@ -140,7 +140,7 @@ Column {
         Row {
           id: metaRow
           width: parent.width
-          spacing: Style.space(2)
+          spacing: Style.space(3)
 
           Text {
             id: tagIcon
@@ -166,6 +166,18 @@ Column {
           }
 
           Text {
+            id: separatorDot
+            visible: tagText.visible && calendarNameText.visible
+            width: visible ? implicitWidth : 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: "\u00B7"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+          }
+
+          Text {
             id: calendarIcon
             visible: calendarNameText.visible
             width: visible ? implicitWidth : 0
@@ -179,7 +191,7 @@ Column {
           Text {
             id: calendarNameText
             visible: taskItem.task && taskItem.task.calendarName
-            width: visible ? Math.max(0, parent.width - (tagIcon.visible ? tagIcon.width + parent.spacing : 0) - (tagText.visible ? tagText.width + parent.spacing : 0) - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)) : 0
+            width: visible ? Math.max(0, parent.width - (tagIcon.visible ? tagIcon.width + parent.spacing : 0) - (tagText.visible ? tagText.width + parent.spacing : 0) - (separatorDot.visible ? separatorDot.width + parent.spacing : 0) - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)) : 0
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
             color: Color.muted
             elide: Text.ElideRight
