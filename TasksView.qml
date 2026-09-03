@@ -298,12 +298,12 @@ Column {
 
     Column {
       width: parent.width
-      spacing: Style.space(2)
+      spacing: Style.space(4)
 
       Text {
         width: parent.width
         text: "Calendars"
-        color: Color.foreground
+        color: Color.accent
         font.family: Style.font.family
         font.pixelSize: Style.font.body
         font.bold: true
@@ -312,7 +312,7 @@ Column {
       Rectangle {
         width: parent.width
         height: 1
-        color: Util.alpha(Color.foreground, 0.35)
+        color: Color.accent
       }
     }
 
