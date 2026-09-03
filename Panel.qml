@@ -46,6 +46,12 @@ Panel {
   property string syncStatus: ""
 
   Timer {
+    id: statusClearTimer2
+    interval: 2000
+    onTriggered: root.syncStatus = ""
+  }
+
+  Timer {
     id: statusClearTimer
     interval: 2000
     onTriggered: {
@@ -54,15 +60,8 @@ Panel {
       } else {
         root.syncStatus = "Sync completed"
       }
-      // Clear the final message after another 2s so it doesn't stay forever
-      root.statusClearTimer2.restart()
+      statusClearTimer2.restart()
     }
-  }
-
-  Timer {
-    id: statusClearTimer2
-    interval: 2000
-    onTriggered: root.syncStatus = ""
   }
 
   function open() {
