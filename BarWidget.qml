@@ -53,12 +53,11 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "Tasks"
-    labelVisible: true
+    text: "\uf00c"
+    labelVisible: false
     hasVisualContent: true
 
     onPressed: function(b) {
-      console.log("[tasks-widget] onPressed b=", b, "panelItem=", !!panelLoader.item)
       root.togglePanel()
     }
   }
