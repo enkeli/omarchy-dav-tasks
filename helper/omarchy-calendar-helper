@@ -30,6 +30,8 @@ MAX_ERROR_BYTES = 64 * 1024
 MAX_EVENTS = 8000
 MAX_CALENDARS = 200
 MAX_FIRED = 2000
+MAX_TASK_CATEGORIES = 32
+MAX_TASK_CATEGORY_LENGTH = 120
 
 
 def read_limited_text(path: Path, max_bytes: int) -> str | None:
@@ -266,6 +268,101 @@ def text_value(value) -> str:
     return str(value or "")
 
 
+def unescape_ical_text(value: str) -> str:
+    result = []
+    escaped = False
+    for char in str(value or ""):
+        if escaped:
+            if char in "nN":
+                result.append("\n")
+            elif char in "\\,;":
+                result.append(char)
+            else:
+                result.extend(["\\", char])
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        else:
+            result.append(char)
+    if escaped:
+        result.append("\\")
+    return "".join(result)
+
+
+def split_ical_categories(value: str) -> list[str]:
+    categories = []
+    current = []
+    escaped = False
+    for char in str(value or ""):
+        if escaped:
+            if char in "nN":
+                current.append("\n")
+            elif char in "\\,;":
+                current.append(char)
+            else:
+                current.extend(["\\", char])
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ",":
+            categories.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    categories.append("".join(current))
+    return categories
+
+
+def sanitize_task_categories(values) -> list[str]:
+    result = []
+    for value in values or []:
+        category = unescape_ical_text(text_value(value)).strip()
+        category = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", category)
+        if category:
+            result.append(category[:MAX_TASK_CATEGORY_LENGTH])
+        if len(result) >= MAX_TASK_CATEGORIES:
+            break
+    return result
+
+
+def extract_categories(component) -> list[str]:
+    """Read and sanitize VTODO categories without requiring write support."""
+    values = None
+    categories_list = getattr(component, "get_categories_list", None)
+    if callable(categories_list):
+        try:
+            values = categories_list()
+        except Exception:
+            values = None
+        if isinstance(values, str):
+            return sanitize_task_categories(split_ical_categories(values))
+        if values is not None:
+            try:
+                values = list(values)
+            except TypeError:
+                values = None
+            if values:
+                return sanitize_task_categories(values)
+
+    categories = getattr(component, "get_categories", None)
+    if callable(categories):
+        try:
+            values = categories()
+        except Exception:
+            values = None
+        if isinstance(values, str):
+            values = split_ical_categories(values)
+        elif values is not None:
+            try:
+                values = list(values)
+            except TypeError:
+                values = []
+        return sanitize_task_categories(values or [])
+    return []
+
+
 def resolve_ical_timezone(modules: EdsModules, tzid: str, client=None):
     name = str(tzid or "").strip()
     if not name:
@@ -419,6 +516,81 @@ def component_event(component, calendar: dict, modules: EdsModules | None = None
     }
 
 
+def safe_component_datetime(component_dt, modules: EdsModules | None = None, client=None) -> tuple[str, bool, str]:
+    """Safely handle component datetime, handling both ComponentDateTime and ICalGLib.Time objects."""
+    if component_dt is None:
+        return "", False, ""
+    # If it's a ComponentDateTime object, use component_datetime
+    if hasattr(component_dt, "get_value"):
+        return component_datetime(component_dt, modules, client)
+    # If it's an ICalGLib.Time object directly
+    if hasattr(component_dt, "is_null_time"):
+        if component_dt.is_null_time():
+            return "", False, ""
+        stamp, all_day = ical_time_iso(component_dt, modules, client)
+        return stamp, all_day, ""
+    return "", False, ""
+
+
+def component_task(component, calendar: dict, modules: EdsModules | None = None, client=None) -> dict:
+    uid = component.get_uid() or ""
+    summary = text_value(component.get_summary()) or "(No title)"
+    descriptions = component.get_descriptions() or []
+    description = text_value(descriptions[0]) if descriptions else ""
+    categories = extract_categories(component)
+    status_raw = str(component.get_status() or "").upper()
+    status_map = {
+        "NEEDS-ACTION": "needs-action",
+        "COMPLETED": "completed",
+        "IN-PROCESS": "in-process",
+        "CANCELLED": "cancelled",
+    }
+    status = status_map.get(status_raw, "needs-action")
+    # Task properties (due, dtstart, completed) may return ComponentDateTime or ICalGLib.Time
+    due, due_all_day, _due_tz = safe_component_datetime(component.get_due(), modules, client)
+    dtstart, start_all_day, _start_tz = safe_component_datetime(component.get_dtstart(), modules, client)
+    completed, _completed_all_day, _completed_tz = safe_component_datetime(component.get_completed(), modules, client)
+    percent = 0
+    try:
+        percent = int(component.get_percent_complete() or 0)
+    except (TypeError, ValueError):
+        percent = 0
+    # EDS sometimes returns empty status for completed tasks; infer from percent
+    if percent == 100 and status != "completed":
+        status = "completed"
+    priority = 0
+    try:
+        priority = int(component.get_priority() or 0)
+    except (TypeError, ValueError):
+        priority = 0
+    # dtstamp returns ICalGLib.Time directly, not a component datetime
+    dtstamp = component.get_dtstamp()
+    if dtstamp is not None and hasattr(dtstamp, "is_null_time") and not dtstamp.is_null_time():
+        created, _created_all_day = ical_time_iso(dtstamp, modules, client)
+    else:
+        created = ""
+    return {
+        "id": ":".join(part for part in [calendar["id"], uid] if part),
+        "uid": uid,
+        "calendarId": calendar["id"],
+        "calendarName": calendar["name"],
+        "calendarColor": calendar["color"],
+        "title": summary,
+        "description": description,
+        "categories": categories,
+        "due": due,
+        "dueAllDay": due_all_day,
+        "start": dtstart,
+        "completed": completed,
+        "status": status,
+        "percentComplete": percent,
+        "priority": priority,
+        "created": created,
+        "provider": calendar["provider"],
+        "source": calendar["source"],
+    }
+
+
 def webdav_resource_path(source, modules: EdsModules) -> str:
     eds = modules.EDataServer
     if not source.has_extension(eds.SOURCE_EXTENSION_WEBDAV_BACKEND):
@@ -550,6 +722,14 @@ def eds_client_for_calendar(calendar_id: str):
     registry = modules.EDataServer.SourceRegistry.new_sync(None)
     source = source_for_calendar(registry, calendar_id, modules)
     client = modules.ECal.Client.connect_sync(source, modules.ECal.ClientSourceType.EVENTS, 8, None)
+    return modules, registry, source, client
+
+
+def eds_client_for_tasks(calendar_id: str):
+    modules = load_eds_modules()
+    registry = modules.EDataServer.SourceRegistry.new_sync(None)
+    source = source_for_calendar(registry, calendar_id, modules)
+    client = modules.ECal.Client.connect_sync(source, modules.ECal.ClientSourceType.TASKS, 8, None)
     return modules, registry, source, client
 
 
@@ -746,6 +926,192 @@ def eds_delete_event(calendar_id: str, uid: str, rid: str = "") -> dict:
     return {"ok": True, "provider": "evolution-data-server", "calendarId": source.get_uid(), "uid": uid, "rid": rid}
 
 
+def list_tasks_eds(calendar_id: str) -> dict:
+    modules = load_eds_modules()
+    registry = modules.EDataServer.SourceRegistry.new_sync(None)
+    
+    sync_log("list-tasks-start", calendarId=calendar_id)
+    
+    # If specific calendar requested, try only that one
+    if calendar_id:
+        try:
+            source = registry.ref_source(calendar_id)
+            if not source:
+                raise ValueError(f"Calendar not found: {calendar_id}")
+            sync_log("list-tasks-source", uid=source.get_uid(), name=source.get_display_name())
+            client = modules.ECal.Client.connect_sync(source, modules.ECal.ClientSourceType.TASKS, 8, None)
+            calendar = source_calendar(source, registry, modules)
+            calendar["readonly"] = bool(client.is_readonly())
+            ok, components = client.get_object_list_as_comps_sync("(contains? 'any' '')", None)
+            sync_log("list-tasks-query", ok=ok, count=len(components) if components else 0)
+            if not ok:
+                return {"ok": True, "provider": "evolution-data-server", "calendar": calendar, "tasks": []}
+            tasks = []
+            for component in components or []:
+                if len(tasks) >= MAX_EVENTS:
+                    break
+                try:
+                    task = component_task(component, calendar, modules, client)
+                    if task["uid"]:
+                        tasks.append(task)
+                except Exception:
+                    continue
+            sync_log("list-tasks-result", count=len(tasks))
+            return {"ok": True, "provider": "evolution-data-server", "calendar": calendar, "tasks": tasks}
+        except Exception as error:
+            sync_log("list-tasks-error", error=str(error)[:200])
+            return {"ok": False, "provider": "evolution-data-server", "error": {"code": "operation-failed", "message": str(error)}}
+    
+    # No specific calendar - iterate all enabled calendars that support tasks
+    all_tasks = []
+    calendars = []
+    for source in registry.list_sources(modules.EDataServer.SOURCE_EXTENSION_CALENDAR):
+        if not registry.check_enabled(source):
+            continue
+        uid = source.get_uid()
+        name = source.get_display_name()
+        sync_log("list-tasks-check", uid=uid, name=name)
+        try:
+            client = modules.ECal.Client.connect_sync(source, modules.ECal.ClientSourceType.TASKS, 8, None)
+            calendar = source_calendar(source, registry, modules)
+            calendar["readonly"] = bool(client.is_readonly())
+            ok, components = client.get_object_list_as_comps_sync("(contains? 'any' '')", None)
+            sync_log("list-tasks-calendar", uid=uid, name=name, ok=ok, count=len(components) if components else 0)
+            if ok:
+                calendars.append(calendar)
+                for component in components or []:
+                    if len(all_tasks) >= MAX_EVENTS:
+                        break
+                    try:
+                        task = component_task(component, calendar, modules, client)
+                        if task["uid"]:
+                            all_tasks.append(task)
+                    except Exception as task_error:
+                        sync_log("list-tasks-component-error", uid=uid, error=str(task_error)[:200])
+                        continue
+        except Exception as error:
+            sync_log("list-tasks-skip", uid=uid, name=name, error=str(error)[:200])
+            # Calendar doesn't support tasks (e.g., birthdays), skip it
+            continue
+    
+    sync_log("list-tasks-done", calendars=len(calendars), tasks=len(all_tasks))
+    return {"ok": True, "provider": "evolution-data-server", "calendars": calendars, "tasks": all_tasks}
+
+
+def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> object:
+    now = datetime.now(UTC)
+    lines = [
+        "BEGIN:VTODO",
+        f"UID:{uid}",
+        f"DTSTAMP:{ics_datetime(now, False)}",
+        f"CREATED:{ics_datetime(now, False)}",
+        f"LAST-MODIFIED:{ics_datetime(now, False)}",
+        f"SUMMARY:{ics_escape(title or '(No title)')}",
+    ]
+    if dtstart:
+        lines.append(f"DTSTART:{ics_datetime(dtstart, False)}")
+    if due:
+        lines.append(f"DUE:{ics_datetime(due, False)}")
+    if description:
+        lines.append(f"DESCRIPTION:{ics_escape(description)}")
+    status_map = {
+        "needs-action": "NEEDS-ACTION",
+        "completed": "COMPLETED",
+        "in-process": "IN-PROCESS",
+        "cancelled": "CANCELLED",
+    }
+    ical_status = status_map.get(str(status or "").strip().lower(), "NEEDS-ACTION")
+    lines.append(f"STATUS:{ical_status}")
+    if priority > 0:
+        lines.append(f"PRIORITY:{priority}")
+    if percent > 0:
+        lines.append(f"PERCENT-COMPLETE:{percent}")
+    if ical_status == "COMPLETED":
+        lines.append(f"COMPLETED:{ics_datetime(now, False)}")
+    lines.append("END:VTODO")
+    ical = modules.ICalGLib.Component.new_from_string("\r\n".join(lines) + "\r\n")
+    if not ical:
+        raise ValueError("Failed to build iCalendar task.")
+    return ical
+
+
+def create_task_eds(calendar_id: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
+    modules, registry, source, client = eds_client_for_tasks(calendar_id)
+    if client.is_readonly():
+        raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
+    uid = f"omarchy-calendar-{uuid4()}"
+    ical = task_component_from_fields(modules, uid, title, due, description, priority, status, percent, dtstart)
+    ok, created_uid = client.create_object_sync(ical, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
+    if not ok:
+        raise ValueError("EDS create_object_sync returned false.")
+    calendar = source_calendar(source, registry, modules)
+    calendar["readonly"] = False
+    component = modules.ECal.Component.new_from_icalcomponent(ical.clone())
+    task = component_task(component, calendar)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "evolution-data-server", "calendar": calendar, "task": task, "uid": created_uid or uid}
+
+
+def update_task_eds(calendar_id: str, uid: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
+    if not uid:
+        raise ValueError("update-task requires --uid.")
+    modules, registry, source, client = eds_client_for_tasks(calendar_id)
+    if client.is_readonly():
+        raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
+    ok, existing = client.get_object_sync(uid, None, None)
+    if not ok or existing is None:
+        raise ValueError(f"Task not found: {uid}")
+    status_map = {
+        "needs-action": "NEEDS-ACTION",
+        "completed": "COMPLETED",
+        "in-process": "IN-PROCESS",
+        "cancelled": "CANCELLED",
+    }
+    ical_status = status_map.get(str(status or "").strip().lower(), "NEEDS-ACTION")
+    existing.set_summary(title or "(No title)")
+    if hasattr(existing, "set_description"):
+        existing.set_description(description or "")
+    utc_zone = modules.ICalGLib.Timezone.get_utc_timezone()
+    if dtstart:
+        stamp = modules.ICalGLib.Time.new_from_timet_with_zone(int(dtstart.timestamp()), 0, utc_zone)
+        existing.set_dtstart(stamp)
+    if due:
+        stamp = modules.ICalGLib.Time.new_from_timet_with_zone(int(due.timestamp()), 0, utc_zone)
+        existing.set_due(stamp)
+    if hasattr(existing, "set_status"):
+        existing.set_status(ical_status)
+    if hasattr(existing, "set_percent_complete"):
+        existing.set_percent_complete(percent)
+    if hasattr(existing, "set_priority"):
+        existing.set_priority(priority)
+    if ical_status == "COMPLETED" and hasattr(existing, "set_completed_date"):
+        now = datetime.now(UTC)
+        completed_stamp = modules.ICalGLib.Time.new_from_timet_with_zone(int(now.timestamp()), 0, utc_zone)
+        existing.set_completed_date(completed_stamp)
+    ok = client.modify_object_sync(existing, modules.ECal.ObjModType.ALL, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
+    if not ok:
+        raise ValueError("EDS modify_object_sync returned false.")
+    calendar = source_calendar(source, registry, modules)
+    calendar["readonly"] = False
+    component = modules.ECal.Component.new_from_icalcomponent(existing.clone())
+    task = component_task(component, calendar, modules, client)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "evolution-data-server", "calendar": calendar, "task": task, "uid": uid}
+
+
+def delete_task_eds(calendar_id: str, uid: str) -> dict:
+    if not uid:
+        raise ValueError("delete-task requires --uid.")
+    modules, registry, source, client = eds_client_for_tasks(calendar_id)
+    if client.is_readonly():
+        raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
+    ok = client.remove_object_sync(uid, None, modules.ECal.ObjModType.ALL, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
+    if not ok:
+        raise ValueError("EDS remove_object_sync returned false.")
+    remove_cache_task(":".join(part for part in [source.get_uid(), uid] if part))
+    return {"ok": True, "provider": "evolution-data-server", "calendarId": source.get_uid(), "uid": uid}
+
+
 def eds_attach_discovered_calendars(modules: EdsModules, registry, parent, credentials, username: str, host: str, port: int, committed: list | None = None) -> list:
     result = modules.EDataServer.webdav_discover_sources_sync(
         parent,
@@ -778,6 +1144,12 @@ def eds_attach_discovered_calendars(modules: EdsModules, registry, parent, crede
         calendar = child.get_extension(modules.EDataServer.SOURCE_EXTENSION_CALENDAR)
         calendar.set_backend_name("caldav")
         calendar.set_selected(True)
+        # Enable task list support for CalDAV sources
+        try:
+            task_list = child.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
+            task_list.set_backend_name("caldav")
+        except Exception:
+            pass  # Task list extension not available
         color = str(getattr(item, "color", "") or "")
         if color:
             calendar.set_color(color)
@@ -955,6 +1327,12 @@ def eds_add_direct_calendar(modules: EdsModules, registry, href: str, display_na
     calendar = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_CALENDAR)
     calendar.set_backend_name("caldav")
     calendar.set_selected(True)
+    # Enable task list support for CalDAV sources
+    try:
+        task_list = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
+        task_list.set_backend_name("caldav")
+    except Exception:
+        pass  # Task list extension not available
     uri = glib_parse_uri(modules, href)
     webdav = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_WEBDAV_BACKEND)
     webdav.set_uri(uri)
@@ -1675,36 +2053,51 @@ def shell_config_path() -> Path:
     return Path(override) if override else Path.home() / ".config/omarchy/shell.json"
 
 
-def ensure_center_anchor(plugin_id: str) -> dict:
+def _bar_entry_id(entry) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("id") or "")
+    return str(entry or "")
+
+
+def _write_shell_config(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def ensure_right_anchor(plugin_id: str) -> dict:
+    """Ensure the plugin appears in the right bar section (idempotent, no clock interference)."""
     plugin_id = str(plugin_id or "").strip()
     path = shell_config_path()
     if not plugin_id or not path.is_file():
         return {"ok": True, "changed": False}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {"ok": True, "changed": False}
     bar = data.get("bar") if isinstance(data, dict) else None
     if not isinstance(bar, dict):
         return {"ok": True, "changed": False}
-    if str(bar.get("centerAnchor") or "") != "omarchy.clock":
-        return {"ok": True, "changed": False, "centerAnchor": str(bar.get("centerAnchor") or "")}
-    center = ((bar.get("layout") or {}).get("center") or [])
-    ids = [str(entry.get("id") or "") if isinstance(entry, dict) else str(entry) for entry in center]
-    if plugin_id not in ids:
-        return {"ok": True, "changed": False, "centerAnchor": "omarchy.clock"}
-    text = path.read_text(encoding="utf-8")
-    updated = text.replace('"centerAnchor": "omarchy.clock"', f'"centerAnchor": "{plugin_id}"', 1)
-    if updated == text:
-        bar["centerAnchor"] = plugin_id
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
-    else:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(updated, encoding="utf-8")
-        tmp.replace(path)
-    return {"ok": True, "changed": True, "centerAnchor": plugin_id}
+    layout = bar.get("layout")
+    if not isinstance(layout, dict):
+        layout = {}
+        bar["layout"] = layout
+
+    right_entries = layout.get("right")
+    if not isinstance(right_entries, list):
+        right_entries = []
+        layout["right"] = right_entries
+
+    existing_ids = [_bar_entry_id(e) for e in right_entries]
+    print(f"[tasks-widget] ensure_right_anchor path={path} plugin_id={plugin_id} right={existing_ids}", file=sys.stderr)
+    if plugin_id not in existing_ids:
+        right_entries.append({"id": plugin_id})
+        _write_shell_config(path, data)
+        print(f"[tasks-widget] ensure_right_anchor wrote {plugin_id} into right", file=sys.stderr)
+        return {"ok": True, "changed": True}
+
+    print("[tasks-widget] ensure_right_anchor already present", file=sys.stderr)
+    return {"ok": True, "changed": False}
 
 
 def reminders_file() -> Path:
@@ -1944,6 +2337,71 @@ def read_cache() -> dict | None:
     return data
 
 
+def tasks_cache_file() -> Path:
+    return cache_dir() / "tasks-cache.json"
+
+
+def read_tasks_cache() -> dict | None:
+    path = tasks_cache_file()
+    text = read_limited_text(path, MAX_CACHE_BYTES)
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        return None
+    data["tasks"] = bound_items(data.get("tasks"), MAX_EVENTS)
+    return data
+
+
+def write_tasks_cache(payload: dict, bump: bool = False) -> None:
+    path = tasks_cache_file()
+    tmp = path.with_suffix(".json.tmp")
+    disk = None if bump else read_tasks_cache()
+    if disk is not None and cache_rev(disk) > cache_rev(payload):
+        payload = dict(payload)
+        payload["tasks"] = disk.get("tasks") or []
+        payload["rev"] = cache_rev(disk)
+    rev = cache_rev(payload)
+    if bump:
+        rev = max(rev, cache_rev(read_tasks_cache())) + 1
+    data = {
+        "ok": True,
+        "provider": payload.get("provider") or "evolution-data-server",
+        "tasks": bound_items(payload.get("tasks"), MAX_EVENTS),
+        "cachedAt": iso(datetime.now(UTC)),
+        "rev": rev,
+    }
+    raw = json.dumps(data, separators=(",", ":"))
+    while len(raw.encode("utf-8")) > MAX_CACHE_BYTES and data["tasks"]:
+        data["tasks"] = data["tasks"][: max(0, len(data["tasks"]) // 2)]
+        raw = json.dumps(data, separators=(",", ":"))
+    if len(raw.encode("utf-8")) > MAX_CACHE_BYTES:
+        return
+    tmp.write_text(raw, encoding="utf-8")
+    tmp.replace(path)
+
+
+def merge_cache_task(task: dict) -> None:
+    if not task or not task.get("id"):
+        return
+    cache = read_tasks_cache() or {"ok": True, "provider": "evolution-data-server", "tasks": []}
+    tasks = [existing for existing in (cache.get("tasks") or []) if existing.get("id") != task.get("id")]
+    tasks.append(task)
+    cache["tasks"] = tasks
+    write_tasks_cache(cache, bump=True)
+
+
+def remove_cache_task(task_id: str) -> None:
+    cache = read_tasks_cache()
+    if not cache or not task_id:
+        return
+    cache["tasks"] = [task for task in (cache.get("tasks") or []) if task.get("id") != task_id]
+    write_tasks_cache(cache, bump=True)
+
+
 def filter_events(events, start: datetime, end: datetime) -> list:
     result = []
     for event in events or []:
@@ -1975,6 +2433,25 @@ def cached_snapshot(start: datetime, end: datetime, provider: str) -> dict:
         "cached": True,
         "cachedAt": cache.get("cachedAt") or "",
         "range": {"start": iso(start), "end": iso(end)},
+    }
+
+
+def cached_tasks_snapshot(provider: str) -> dict:
+    cache = read_tasks_cache()
+    if not cache:
+        return {
+            "ok": False,
+            "provider": provider,
+            "tasks": [],
+            "cached": True,
+            "error": {"code": "no-cache", "message": "No local tasks cache yet."},
+        }
+    return {
+        "ok": True,
+        "provider": cache.get("provider") or provider,
+        "tasks": bound_items(cache.get("tasks"), MAX_EVENTS),
+        "cached": True,
+        "cachedAt": cache.get("cachedAt") or "",
     }
 
 
@@ -2152,7 +2629,7 @@ def remove_cache_event(event_id: str) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
@@ -2170,6 +2647,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--meeting-kind", default="none")
     parser.add_argument("--from-cache", action="store_true")
     parser.add_argument("--if-changed", action="store_true")
+    parser.add_argument("--status", default="needs-action")
+    parser.add_argument("--percent-complete", type=int, default=0)
+    parser.add_argument("--priority", type=int, default=0)
+    parser.add_argument("--due", default="")
     args = parser.parse_args(argv)
 
     start = parse_instant(args.start)
@@ -2181,8 +2662,10 @@ def main(argv: list[str]) -> int:
             if args.operation == "list-calendars":
                 payload = {key: value for key, value in payload.items() if key != "events"}
             return emit_json(payload)
+        if args.from_cache and args.operation == "list-tasks":
+            return emit_json(cached_tasks_snapshot(args.provider))
         if args.operation == "ensure-center-anchor":
-            return emit_json(ensure_center_anchor(args.title or "sirwizardlizard.calendar"))
+            return emit_json(ensure_center_anchor(args.title or "dev.enkeli.omadav"))
         if args.operation == "reminders-state":
             return emit_json(read_reminders())
         if args.operation == "reminders-save":
@@ -2229,6 +2712,37 @@ def main(argv: list[str]) -> int:
                 apply_calendar_overrides_to_cache(items)
                 payload = {"ok": True, "provider": args.provider, "calendars": items}
             return emit_json(payload)
+        if args.operation == "list-tasks":
+            if args.provider not in ("eds", "evolution-data-server"):
+                raise ValueError("list-tasks currently requires the evolution-data-server provider.")
+            return emit_json(list_tasks_eds(args.calendar_id))
+        if args.operation == "create-task":
+            if args.provider not in ("eds", "evolution-data-server"):
+                raise ValueError("create-task currently requires the evolution-data-server provider.")
+            due = parse_event_instant(args.due) if args.due else None
+            dtstart = start if args.start else None
+            return emit_json(create_task_eds(args.calendar_id, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
+        if args.operation == "update-task":
+            if not args.uid:
+                raise ValueError("update-task requires --uid.")
+            if args.provider not in ("eds", "evolution-data-server"):
+                raise ValueError("update-task currently requires the evolution-data-server provider.")
+            due = parse_event_instant(args.due) if args.due else None
+            dtstart = start if args.start else None
+            return emit_json(update_task_eds(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
+        if args.operation == "delete-task":
+            if not args.uid:
+                raise ValueError("delete-task requires --uid.")
+            if args.provider not in ("eds", "evolution-data-server"):
+                raise ValueError("delete-task currently requires the evolution-data-server provider.")
+            return emit_json(delete_task_eds(args.calendar_id, args.uid))
+        if args.operation == "tasks-save-cache":
+            raw = read_stdin_limited(MAX_CACHE_BYTES)
+            payload = json.loads(raw or "{}")
+            write_tasks_cache(payload)
+            return emit_json({"ok": True, "provider": payload.get("provider") or args.provider})
+        if args.operation == "ensure-right-anchor":
+            return emit_json(ensure_right_anchor(args.title))
     except Exception as error:
         return emit_json({"ok": False, "provider": args.provider, "error": {"code": "operation-failed", "message": str(error)}})
 
