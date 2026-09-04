@@ -158,7 +158,7 @@ Column {
 
           Text {
             id: calendarIcon
-            visible: calendarNameText.visible
+            visible: taskItem.hasCalendarName
             width: visible ? implicitWidth : 0
             text: "\uf073"
             color: taskItem.taskCalendarColor
@@ -169,7 +169,7 @@ Column {
 
           Text {
             id: calendarNameText
-            visible: taskItem.calendarNameAvailableWidth > 0
+            visible: taskItem.hasCalendarName
             // Content-sized first block: take only the width the calendar name needs,
             // but elide when the tag block leaves less room than that.
             width: visible ? Math.min(implicitWidth, taskItem.calendarNameAvailableWidth) : 0
