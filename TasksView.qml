@@ -84,6 +84,19 @@ Column {
 
     readonly property color taskCalendarColor: taskItem.task && taskItem.task.calendarColor ? taskItem.task.calendarColor : Color.muted
     readonly property bool overdue: taskItem.showOverdue && taskItem.task && TaskModel.isOverdue(taskItem.task, tasksView.now)
+    readonly property bool hasCalendarName: taskItem.task && taskItem.task.calendarName
+    readonly property real calendarNameAvailableWidth: {
+      if (!hasCalendarName || !metaRow.visible) return 0
+      var s = metaRow.spacing
+      var available = metaRow.width
+      available -= calendarIcon.implicitWidth + s
+      if (tagText.visible) {
+        available -= separatorDot.implicitWidth + s
+        available -= tagIcon.implicitWidth + s
+        available -= tagText.width + s
+      }
+      return Math.max((dateLabel === "completed" && hasCalendarName ? Style.space(8) : 0), available + s)
+    }
     readonly property string dateText: {
       if (!taskItem.task) return ""
       if (taskItem.dateLabel === "completed") return TaskModel.formatCompletedDate(taskItem.task)
@@ -156,16 +169,10 @@ Column {
 
           Text {
             id: calendarNameText
-            visible: taskItem.task && taskItem.task.calendarName
+            visible: taskItem.calendarNameAvailableWidth > 0
             // Content-sized first block: take only the width the calendar name needs,
             // but elide when the tag block leaves less room than that.
-            width: visible ? Math.max(0, Math.min(implicitWidth,
-                parent.width
-                - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)
-                - (separatorDot.visible ? separatorDot.width + parent.spacing : 0)
-                - (tagIcon.visible ? tagIcon.width + parent.spacing : 0)
-                - (tagText.visible ? tagText.width + parent.spacing : 0)
-                + parent.spacing)) : 0
+            width: visible ? Math.min(implicitWidth, taskItem.calendarNameAvailableWidth) : 0
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
             color: taskItem.taskCalendarColor
             elide: Text.ElideRight
