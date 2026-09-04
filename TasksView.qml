@@ -180,7 +180,14 @@ Column {
             visible: taskItem.hasCalendarName
             // Content-sized first block: take only the width the calendar name needs,
             // but elide when the tag block leaves less room than that.
-            width: visible ? Math.min(implicitWidth, taskItem.calendarNameAvailableWidth) : 0
+            width: {
+              if (!visible) return 0
+              // Done delegates can be instantiated while the tab is still hidden,
+              // which latches implicitWidth at 0. Use the computed available width
+              // directly so the calendar name is not lost after the tab is shown.
+              if (taskItem.dateLabel === "completed") return Math.max(0, taskItem.calendarNameAvailableWidth)
+              return Math.min(implicitWidth, taskItem.calendarNameAvailableWidth)
+            }
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
             color: taskItem.taskCalendarColor
             elide: Text.ElideRight
