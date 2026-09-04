@@ -86,7 +86,7 @@ Column {
     readonly property bool overdue: taskItem.showOverdue && taskItem.task && TaskModel.isOverdue(taskItem.task, tasksView.now)
     readonly property bool hasCalendarName: taskItem.task && taskItem.task.calendarName
     readonly property real calendarNameAvailableWidth: {
-      if (!hasCalendarName || !metaRow.visible) return 0
+      if (!hasCalendarName) return 0
       var s = metaRow.spacing
       var available = metaRow.width
       available -= calendarIcon.implicitWidth + s
@@ -95,7 +95,15 @@ Column {
         available -= tagIcon.implicitWidth + s
         available -= tagText.width + s
       }
-      return Math.max((dateLabel === "completed" && hasCalendarName ? Style.space(8) : 0), available + s)
+      // Done tab uses "completed" dates and its delegates are created while the
+      // tab container is becoming visible, so the metadata row can still report
+      // visible:false during layout. Compute width from the row geometry anyway
+      // so the calendar name does not collapse to zero.
+      if (dateLabel === "completed") {
+        return Math.max(Style.space(8), available + s)
+      }
+      if (!metaRow.visible) return 0
+      return Math.max(0, available + s)
     }
     readonly property string dateText: {
       if (!taskItem.task) return ""
