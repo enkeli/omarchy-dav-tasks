@@ -261,7 +261,6 @@ Item {
   function createTask(calendarIdArg, title, due, priority, description, categories) {
     debugLog("action: create-task calendar=" + calendarIdArg + " title=" + title)
     var targetCalendar = String(calendarIdArg || calendarId || defaultCalendarId())
-    tasksStatus = "saving"
     tasksErrorMessage = ""
     if (tasksCreateProc.running) tasksCreateProc.running = false
     tasksPendingCreateId = "omarchy-task-pending-" + Date.now()
@@ -281,6 +280,10 @@ Item {
     var next = cachedTasks.slice()
     next.push(optimistic)
     applyTaskCache(next, cachedCalendars)
+    // Create owns its status values ("adding" / "added") so the panel banner
+    // can show create-specific text while update/delete keep "saving". Set
+    // after applyTaskCache, which optimistically resets the status to "ready".
+    tasksStatus = "adding"
     tasksCreateProc.command = [
       helperPath(), "create-task",
       "--provider", calendarProviderById(targetCalendar),
@@ -304,9 +307,10 @@ Item {
         mergeTask(payload.tasks[0])
         root.taskCreated(payload.tasks[0])
       }
-      root.tasksStatus = "ready"
+      root.tasksStatus = "added"
       root.tasksErrorMessage = ""
       root.startTasksLiveSync(true)
+      taskAddedTimer.restart()
     } else {
       removePendingTask(root.tasksPendingCreateId)
       root.tasksStatus = "error"
@@ -668,6 +672,17 @@ Item {
       }
       root.refreshed()
     }
+  }
+
+  // Success flash for task creation: hold "added" long enough for the panel
+  // banner to display it, then fall back to the normal ready state. Guarded
+  // so an intervening status change (e.g. a finished live sync) is not
+  // reverted on top of.
+  Timer {
+    id: taskAddedTimer
+    interval: 2000
+    repeat: false
+    onTriggered: if (root.tasksStatus === "added") root.tasksStatus = "ready"
   }
 
   Timer {

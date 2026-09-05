@@ -57,6 +57,21 @@ Panel {
   property date now: new Date()
   property string syncStatus: ""
 
+  // Task-create feedback mapped from the service status machine. Sync-flow
+  // text keeps precedence (it has its own clear timers); service "error" is
+  // deliberately not surfaced here — the add form's inline error is the
+  // single failure surface.
+  readonly property string serviceTaskStatus: calendarService && calendarService.tasksStatus !== undefined
+    ? String(calendarService.tasksStatus)
+    : ""
+
+  function bannerText() {
+    if (root.syncStatus !== "") return root.syncStatus
+    if (root.serviceTaskStatus === "adding") return "Adding task..."
+    if (root.serviceTaskStatus === "added") return "Task added successfully"
+    return ""
+  }
+
   Timer {
     id: statusClearTimer2
     interval: 2000
@@ -225,11 +240,11 @@ Panel {
 
               Text {
                 anchors.centerIn: parent
-                text: root.syncStatus
-                visible: root.syncStatus !== ""
+                text: root.bannerText()
+                visible: root.bannerText() !== ""
                 color: root.syncStatus.includes("failed") ? "#ff6b6b" : Color.foreground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.small
+                font.pixelSize: Style.font.bodySmall
               }
 
               Row {
