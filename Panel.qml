@@ -81,6 +81,9 @@ Panel {
     root.now = new Date()
     // Do not auto-refresh with status on open; only explicit Sync button sets status
     if (!root.selectedKey) root.selectedKey = root.todayKey
+    // Reopen must not leave the add-task form owning the keyboard: drop the
+    // picker and editor focus (the typed draft itself is kept).
+    if (typeof tasksViewRoot.releaseEditing === "function") tasksViewRoot.releaseEditing()
     if (calendarService) calendarService.listTasks()
     root.controller.show()
     Qt.callLater(function() { if (root.opened) setCenterHoverRevealSuppressed(true) })
@@ -139,6 +142,12 @@ Panel {
       calendarService.ensureRightAnchor()
   }
 
+  // Give keyboard focus back to the panel cursor after an inline editor
+  // (add-task fields, date picker) releases it.
+  function focusKeyCatcher() {
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
   Timer {
     interval: 10000
     running: root.opened
@@ -160,6 +169,10 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // While the add-task form owns the keyboard (text fields, calendar
+      // dropdown popup, due-date picker) the panel cursor must stand down
+      // so typing reaches the fields — same contract as the shell panels.
+      blocked: tasksViewRoot.formEditing
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -225,6 +238,18 @@ Panel {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
+                Button {
+                  id: addTaskButton
+                  text: "Add Task"
+                  iconText: "\uf067"
+                  tooltipText: "Add a new task"
+                  foreground: Color.accent
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                  onClicked: {
+                    root.debugLog("action: open add task")
+                    tasksViewRoot.activeTab = "add"
+                  }
+                }
                 Button {
                   id: syncButton
                   text: "\uf021"

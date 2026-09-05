@@ -231,7 +231,7 @@ Item {
     }
   }
 
-  function createTask(calendarIdArg, title, due, priority) {
+  function createTask(calendarIdArg, title, due, priority, description, categories) {
     debugLog("action: create-task calendar=" + calendarIdArg + " title=" + title)
     var targetCalendar = String(calendarIdArg || calendarId || defaultCalendarId())
     tasksStatus = "saving"
@@ -245,6 +245,8 @@ Item {
       due: due || "",
       status: "NEEDS-ACTION",
       priority: priority || "",
+      description: description || "",
+      categories: Array.isArray(categories) ? categories : [],
       calendarId: targetCalendar,
       calendarName: calendarNameById(targetCalendar)
     })
@@ -260,6 +262,8 @@ Item {
       "--due", String(due || ""),
       "--priority", String(priority || "")
     ]
+    if (description) tasksCreateProc.command.push("--description", String(description))
+    if (categories && categories.length > 0) tasksCreateProc.command.push("--categories", categories.join(","))
     tasksCreateProc.running = true
   }
 

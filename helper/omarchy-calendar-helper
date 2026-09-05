@@ -998,7 +998,7 @@ def list_tasks_eds(calendar_id: str) -> dict:
     return {"ok": True, "provider": "evolution-data-server", "calendars": calendars, "tasks": all_tasks}
 
 
-def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> object:
+def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: datetime | None, description: str, categories: list[str], priority: int, status: str, percent: int, dtstart: datetime | None) -> object:
     now = datetime.now(UTC)
     lines = [
         "BEGIN:VTODO",
@@ -1014,6 +1014,8 @@ def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: d
         lines.append(f"DUE:{ics_datetime(due, False)}")
     if description:
         lines.append(f"DESCRIPTION:{ics_escape(description)}")
+    if categories:
+        lines.append(f"CATEGORIES:{','.join(ics_escape(category) for category in categories)}")
     status_map = {
         "needs-action": "NEEDS-ACTION",
         "completed": "COMPLETED",
@@ -1035,12 +1037,12 @@ def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: d
     return ical
 
 
-def create_task_eds(calendar_id: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
+def create_task_eds(calendar_id: str, title: str, due: datetime | None, description: str, categories: list[str], priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
     modules, registry, source, client = eds_client_for_tasks(calendar_id)
     if client.is_readonly():
         raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
     uid = f"omarchy-calendar-{uuid4()}"
-    ical = task_component_from_fields(modules, uid, title, due, description, priority, status, percent, dtstart)
+    ical = task_component_from_fields(modules, uid, title, due, description, categories, priority, status, percent, dtstart)
     ok, created_uid = client.create_object_sync(ical, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
     if not ok:
         raise ValueError("EDS create_object_sync returned false.")
@@ -2629,7 +2631,7 @@ def remove_cache_event(event_id: str) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
@@ -2638,6 +2640,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--title", default="")
     parser.add_argument("--location", default="")
     parser.add_argument("--description", default="")
+    parser.add_argument("--categories", default="")
     parser.add_argument("--all-day", action="store_true")
     parser.add_argument("--uid", default="")
     parser.add_argument("--rid", default="")
@@ -2664,8 +2667,6 @@ def main(argv: list[str]) -> int:
             return emit_json(payload)
         if args.from_cache and args.operation == "list-tasks":
             return emit_json(cached_tasks_snapshot(args.provider))
-        if args.operation == "ensure-center-anchor":
-            return emit_json(ensure_center_anchor(args.title or "dev.enkeli.omadav"))
         if args.operation == "reminders-state":
             return emit_json(read_reminders())
         if args.operation == "reminders-save":
@@ -2721,7 +2722,8 @@ def main(argv: list[str]) -> int:
                 raise ValueError("create-task currently requires the evolution-data-server provider.")
             due = parse_event_instant(args.due) if args.due else None
             dtstart = start if args.start else None
-            return emit_json(create_task_eds(args.calendar_id, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
+            categories = sanitize_task_categories(str(args.categories or "").split(","))
+            return emit_json(create_task_eds(args.calendar_id, args.title, due, args.description, categories, args.priority, args.status, args.percent_complete, dtstart))
         if args.operation == "update-task":
             if not args.uid:
                 raise ValueError("update-task requires --uid.")

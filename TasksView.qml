@@ -18,6 +18,16 @@ Column {
   property string activeTab: "pending"
   property date now: new Date()
 
+  // True while the add-task view owns keyboard input (text fields focused,
+  // calendar dropdown popup open, due-date picker open). Panel.qml binds the
+  // key catcher's `blocked` to this so typing reaches the form.
+  readonly property bool formEditing: activeTab === "add" && (
+    addSummaryField.activeFocus
+    || addDescriptionField.activeFocus
+    || addCategoryField.activeFocus
+    || addCalendarDropdown.popupOpen
+    || addDueGrid.popupOpen)
+
   // Direct binding to taskService.allTasks - this should update when the property changes
   readonly property var allTasks: taskService ? taskService.allTasks : []
 
@@ -343,6 +353,246 @@ Column {
     }
   }
 
+  // Labeled form row for the add-task view: small muted caption above, then
+  // whatever control(s) the caller injects (field, helper text, picker...).
+  component AddFormField: Column {
+    id: addFormField
+    default property alias contentData: addFormFieldContent.data
+    property string label: ""
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(4)
+
+    Text {
+      width: parent.width
+      text: addFormField.label
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      textFormat: Text.PlainText
+    }
+
+    Column {
+      id: addFormFieldContent
+      width: parent.width
+      spacing: Style.space(4)
+    }
+  }
+
+  // One day cell of the due-date mini calendar. `cell` is fed from the
+  // Repeater's modelData at the use site; only instantiated under the
+  // AddDuePicker, so the `dueGrid` scope reference is always resolvable.
+  component AddDueCell: Rectangle {
+    id: dueCell
+    property var cell: null
+
+    readonly property bool picked: dueCell.cell ? dueCell.cell.selected : false
+    readonly property bool dimmed: dueCell.cell ? !dueCell.cell.inMonth : true
+
+    width: dueGrid.cellSize
+    height: dueGrid.cellSize
+    radius: Style.cornerRadius
+    color: cellMouse.pressed ? Style.pressedFillFor(Color.foreground, Color.accent)
+      : picked ? Style.selectedFillFor(Color.foreground, Color.accent)
+      : cellMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent)
+      : "transparent"
+    border.width: dueCell.cell && dueCell.cell.today && !picked ? 1 : 0
+    border.color: Color.accent
+
+    Text {
+      anchors.centerIn: parent
+      text: dueCell.cell ? dueCell.cell.day : ""
+      color: dueCell.picked ? Style.selectedStateColor(Color.foreground, Color.accent)
+        : dueCell.dimmed ? Util.alpha(Color.foreground, 0.35)
+        : Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      font.bold: dueCell.picked || (dueCell.cell && dueCell.cell.today)
+      textFormat: Text.PlainText
+    }
+
+    MouseArea {
+      id: cellMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: dueCell.cell ? dueCell.cell.inMonth : false
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!dueCell.cell) return
+        dueGrid.pickCell(dueCell.cell)
+      }
+    }
+  }
+
+  // Compact month grid for the due-date field: Monday-first, today ringed,
+  // selected day filled, prev/next month plus a Today jump. Stays narrow
+  // enough for the panel card on small screens.
+  component AddDuePicker: Column {
+    id: dueGrid
+    property int viewYear: 0
+    property int viewMonth: 0
+    property bool popupOpen: visible
+
+    readonly property real cellGap: Style.space(2)
+    readonly property real cellSize: Math.max(Style.space(12), Math.floor((width - cellGap * 6) / 7))
+    readonly property int leadingDays: viewYear > 0 ? (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7 : 0
+    readonly property int daysInMonth: viewYear > 0 ? new Date(viewYear, viewMonth + 1, 0).getDate() : 0
+    readonly property int rowCount: Math.ceil((leadingDays + daysInMonth) / 7)
+    readonly property string monthLabel: viewYear > 0 ? TaskModel.MONTH_NAMES[viewMonth] + " " + viewYear : ""
+    readonly property var weekdayLabels: ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    readonly property var cells: {
+      var out = []
+      if (viewYear <= 0) return out
+      var leading = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
+      var cursor = new Date(viewYear, viewMonth, 1 - leading)
+      var today = addTaskView.dueKeyForDate(tasksView.now)
+      for (var i = 0; i < rowCount * 7; i++) {
+        var cellYear = cursor.getFullYear()
+        var cellMonth = cursor.getMonth()
+        var cellDay = cursor.getDate()
+        var key = addTaskView.dueKeyFor(cellYear, cellMonth, cellDay)
+        out.push({
+          key: key,
+          day: cellDay,
+          inMonth: cellMonth === viewMonth && cellYear === viewYear,
+          today: key === today,
+          selected: key === addTaskView.dueKey
+        })
+        cursor.setDate(cursor.getDate() + 1)
+      }
+      return out
+    }
+    readonly property var cellRows: {
+      var rows = []
+      var all = cells
+      for (var r = 0; r < rowCount; r++) rows.push(all.slice(r * 7, r * 7 + 7))
+      return rows
+    }
+
+    function stepMonth(delta) {
+      var target = new Date(viewYear, viewMonth + delta, 1)
+      viewYear = target.getFullYear()
+      viewMonth = target.getMonth()
+    }
+
+    function showToday() {
+      viewYear = tasksView.now.getFullYear()
+      viewMonth = tasksView.now.getMonth()
+    }
+
+    // Handles a day-cell click on behalf of the cell (the cell's inline
+    // component scope cannot see the add view's ids directly).
+    function pickCell(cell) {
+      if (!cell) return
+      debugLog("action: pick due date " + cell.key)
+      addTaskView.dueKey = cell.key
+      addTaskView.closeDuePicker()
+    }
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(2)
+    focus: visible
+
+    onVisibleChanged: {
+      if (!visible) return
+      var anchor = addTaskView.parseDueKey(addTaskView.dueKey)
+      if (!anchor) anchor = new Date(tasksView.now)
+      viewYear = anchor.getFullYear()
+      viewMonth = anchor.getMonth()
+      forceActiveFocus()
+    }
+
+    Keys.onEscapePressed: function(event) {
+      addTaskView.closeDuePicker()
+      event.accepted = true
+    }
+
+    Item {
+      width: parent.width
+      height: Style.spacing.controlHeight
+
+      Row {
+        anchors.centerIn: parent
+        spacing: Style.space(2)
+
+        Button {
+          text: "\uf104"
+          tooltipText: "Previous month"
+          fontSize: Style.font.caption
+          onClicked: dueGrid.stepMonth(-1)
+        }
+
+        Text {
+          width: Style.space(110)
+          anchors.verticalCenter: parent.verticalCenter
+          horizontalAlignment: Text.AlignHCenter
+          text: dueGrid.monthLabel
+          color: Color.foreground
+          elide: Text.ElideRight
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+
+        Button {
+          text: "\uf105"
+          tooltipText: "Next month"
+          fontSize: Style.font.caption
+          onClicked: dueGrid.stepMonth(1)
+        }
+      }
+
+      Button {
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Today"
+        tooltipText: "Jump to current month"
+        fontSize: Style.font.caption
+        onClicked: dueGrid.showToday()
+      }
+    }
+
+    Row {
+      spacing: dueGrid.cellGap
+
+      Repeater {
+        model: dueGrid.weekdayLabels
+
+        Text {
+          required property var modelData
+          width: dueGrid.cellSize
+          horizontalAlignment: Text.AlignHCenter
+          text: modelData
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+      }
+    }
+
+    Repeater {
+      model: dueGrid.cellRows
+
+      Row {
+        required property var modelData
+        spacing: dueGrid.cellGap
+
+        Repeater {
+          model: modelData
+
+          AddDueCell {
+            required property var modelData
+            cell: modelData
+          }
+        }
+      }
+    }
+  }
+
   // --- Content ---
 
   // Error message
@@ -638,6 +888,418 @@ Column {
     }
   }
 
+  // Add tab content
+  Column {
+    id: addTaskView
+    visible: tasksView.activeTab === "add"
+    width: Math.min(parent.width, Style.space(420))
+    anchors.horizontalCenter: parent.horizontalCenter
+    spacing: Style.space(12)
+
+    // --- Add-task state ---------------------------------------------------
+
+    property string calendarId: ""
+    property string dueKey: ""
+    property bool duePickerOpen: false
+    property bool submitBusy: false
+
+    readonly property var writableCalendars: {
+      var all = calendarService && calendarService.calendars ? calendarService.calendars : []
+      var out = []
+      for (var i = 0; i < all.length; i++) {
+        var calendar = all[i]
+        if (calendar && calendar.id && !calendar.readonly) out.push(calendar)
+      }
+      return out
+    }
+
+    readonly property var calendarOptions: {
+      var out = []
+      for (var i = 0; i < writableCalendars.length; i++) {
+        var calendar = writableCalendars[i]
+        out.push({ value: String(calendar.id), label: TaskModel.calendarChoiceLabel(calendar, {}) })
+      }
+      return out
+    }
+
+    readonly property bool canSubmit: !submitBusy
+      && calendarId !== ""
+      && calendarService !== null
+      && trimText(addSummaryField.text).length > 0
+
+    // --- Add-task behavior ------------------------------------------------
+
+    function trimText(value) {
+      return String(value == null ? "" : value).replace(/^\s+|\s+$/g, "")
+    }
+
+    function pad2(value) {
+      var s = String(value)
+      return s.length < 2 ? "0" + s : s
+    }
+
+    // All-day due strings stay local to this view: build and format only,
+    // never resolve calendar math beyond what the mini grid needs.
+    function dueKeyFor(year, month, day) {
+      if (!isFinite(year) || !isFinite(month) || !isFinite(day)) return ""
+      return [year, pad2(month + 1), pad2(day)].join("-")
+    }
+
+    function dueKeyForDate(date) {
+      if (!date || isNaN(date.getTime())) return ""
+      return dueKeyFor(date.getFullYear(), date.getMonth(), date.getDate())
+    }
+
+    function parseDueKey(key) {
+      var parts = String(key || "").split("-")
+      if (parts.length !== 3) return null
+      var year = parseInt(parts[0], 10)
+      var month = parseInt(parts[1], 10)
+      var day = parseInt(parts[2], 10)
+      if (!isFinite(year) || !isFinite(month) || !isFinite(day)) return null
+      if (month < 1 || month > 12 || day < 1 || day > 31) return null
+      return new Date(year, month - 1, day)
+    }
+
+    // "Mon d" this year, "Mon d, YYYY" otherwise — TaskModel.formatDueDate style.
+    function formatDueChoice(key) {
+      var date = parseDueKey(key)
+      if (!date) return ""
+      var month = TaskModel.SHORT_MONTH_NAMES[date.getMonth()]
+      var day = date.getDate()
+      var year = date.getFullYear()
+      if (year === tasksView.now.getFullYear()) return month + " " + day
+      return month + " " + day + ", " + year
+    }
+
+    function hasCalendar(id) {
+      var all = writableCalendars
+      for (var i = 0; i < all.length; i++) {
+        if (String(all[i].id) === String(id)) return true
+      }
+      return false
+    }
+
+    // Prefer the service default when it is writable, else the first
+    // writable calendar, else "" (submit stays disabled with a hint).
+    function defaultWritableCalendarId() {
+      var preferred = calendarService && typeof calendarService.defaultCalendarId === "function"
+        ? String(calendarService.defaultCalendarId() || "")
+        : ""
+      if (preferred !== "" && hasCalendar(preferred)) return preferred
+      var all = writableCalendars
+      return all.length > 0 ? String(all[0].id) : ""
+    }
+
+    function resetCalendar() {
+      calendarId = defaultWritableCalendarId()
+      // Dropdown reassigns its own value on selection, which breaks an
+      // outer binding — mirror every external change into it instead.
+      if (addCalendarDropdown) addCalendarDropdown.value = calendarId
+    }
+
+    function toggleDuePicker() {
+      duePickerOpen = !duePickerOpen
+      if (!duePickerOpen) restorePanelFocus()
+    }
+
+    function closeDuePicker() {
+      if (!duePickerOpen) return
+      duePickerOpen = false
+      restorePanelFocus()
+    }
+
+    function clearDueDate() {
+      debugLog("action: clear due date")
+      dueKey = ""
+    }
+
+    function parsedCategories() {
+      var raw = addCategoryField.text.split(",")
+      var out = []
+      for (var i = 0; i < raw.length; i++) {
+        var tag = trimText(raw[i])
+        if (tag.length > 0) out.push(tag)
+      }
+      return out
+    }
+
+    function clearDraft() {
+      addSummaryField.text = ""
+      addDescriptionField.text = ""
+      addCategoryField.text = ""
+      dueKey = ""
+      duePickerOpen = false
+    }
+
+    function trySubmit() {
+      if (!canSubmit) return
+      var title = trimText(addSummaryField.text)
+      var description = String(addDescriptionField.text == null ? "" : addDescriptionField.text)
+      var categories = parsedCategories()
+      submitBusy = true
+      addSubmitCooldown.restart()
+      debugLog("action: create task calendar=" + calendarId + " due=" + (dueKey !== "" ? dueKey : "(none)") + " title=" + title)
+      // Optimistic create: the pending task appears at once, so return to
+      // the list immediately. Priority stays at its service default.
+      if (calendarService) {
+        calendarService.createTask(calendarId, title, dueKey, undefined, description, categories)
+      }
+      clearDraft()
+      tasksView.activeTab = "pending"
+    }
+
+    function cancelAdd() {
+      debugLog("action: add task cancel")
+      clearDraft()
+      resetCalendar()
+      tasksView.activeTab = "pending"
+    }
+
+    function escapeAdd() {
+      debugLog("action: add task escape")
+      duePickerOpen = false
+      tasksView.activeTab = "pending"
+    }
+
+    function beginAdd() {
+      if (calendarId === "" || !hasCalendar(calendarId)) resetCalendar()
+      Qt.callLater(function() { addSummaryField.forceActiveFocus() })
+    }
+
+    function releaseEditing() {
+      duePickerOpen = false
+      addSummaryField.focus = false
+      addDescriptionField.focus = false
+      addCategoryField.focus = false
+      restorePanelFocus()
+    }
+
+    // Hand the keyboard back to the panel cursor unless a field still
+    // holds focus (the shared Dropdown and picker close without doing it).
+    function restorePanelFocus() {
+      if (!tasksView.opened) return
+      if (addSummaryField.activeFocus || addDescriptionField.activeFocus || addCategoryField.activeFocus) return
+      if (panel && typeof panel.focusKeyCatcher === "function") panel.focusKeyCatcher()
+    }
+
+    onWritableCalendarsChanged: if (calendarId === "" || !hasCalendar(calendarId)) resetCalendar()
+
+    Timer {
+      id: addSubmitCooldown
+      interval: 800
+      onTriggered: addTaskView.submitBusy = false
+    }
+
+    // --- Add-task layout --------------------------------------------------
+
+    Column {
+      width: parent.width
+      spacing: Style.space(4)
+
+      Item {
+        width: parent.width
+        height: Math.max(addHeaderTitle.implicitHeight, addHeaderClose.implicitHeight)
+
+        Text {
+          id: addHeaderTitle
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: "New Task"
+          color: Color.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+
+        Button {
+          id: addHeaderClose
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: "\u2715"
+          tooltipText: "Back to tasks"
+          fontSize: Style.font.caption
+          onClicked: {
+            debugLog("action: add task close")
+            tasksView.activeTab = "pending"
+          }
+        }
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Color.accent
+      }
+    }
+
+    AddFormField {
+      label: "Calendar"
+
+      Dropdown {
+        id: addCalendarDropdown
+        width: parent.width
+        showLabel: false
+        options: addTaskView.calendarOptions
+        value: addTaskView.calendarId
+        onChanged: function(v) { addTaskView.calendarId = v }
+        onPopupOpenChanged: if (!popupOpen) addTaskView.restorePanelFocus()
+      }
+
+      Text {
+        visible: addTaskView.calendarOptions.length === 0
+        width: parent.width
+        text: "No writable calendars — add one in Config"
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        textFormat: Text.PlainText
+      }
+    }
+
+    AddFormField {
+      label: "Summary"
+
+      TextField {
+        id: addSummaryField
+        width: parent.width
+        placeholderText: "What needs doing?"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        onAccepted: addTaskView.trySubmit()
+        Keys.onEscapePressed: function(event) {
+          addTaskView.escapeAdd()
+          event.accepted = true
+        }
+      }
+    }
+
+    AddFormField {
+      label: "Description"
+
+      BorderSurface {
+        id: addDescriptionSurface
+        width: parent.width
+        height: Style.space(76)
+        radius: Style.cornerRadius
+
+        readonly property bool _focused: addDescriptionField.activeFocus
+        readonly property bool _hot: addDescriptionField.hovered
+        readonly property var _borderSpec: Border.controlSpec(_focused ? "focus" : (_hot ? "hover-cursor" : "normal"), Color.foreground, Color.accent)
+
+        color: Style.controlFill(_focused, _hot, Color.foreground, Color.accent)
+        borderSpec: _borderSpec
+
+        TextArea {
+          id: addDescriptionField
+          anchors.fill: parent
+          anchors.leftMargin: Style.spacing.controlPaddingX + Border.left(parent._borderSpec)
+          anchors.rightMargin: Style.spacing.controlPaddingX + Border.right(parent._borderSpec)
+          anchors.topMargin: Style.space(6) + Border.top(parent._borderSpec)
+          anchors.bottomMargin: Style.space(6) + Border.bottom(parent._borderSpec)
+          placeholderText: "Optional details"
+          placeholderTextColor: Qt.darker(Color.foreground, 1.6)
+          selectionColor: Style.selectionFillFor(Color.foreground, Color.accent)
+          selectedTextColor: Color.foreground
+          wrapMode: TextArea.Wrap
+          textFormat: Text.PlainText
+          persistentSelection: false
+          clip: true
+          background: null
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          Keys.onEscapePressed: function(event) {
+            addTaskView.escapeAdd()
+            event.accepted = true
+          }
+        }
+      }
+    }
+
+    AddFormField {
+      label: "Due"
+
+      Row {
+        width: parent.width
+        spacing: Style.space(4)
+
+        Button {
+          id: addDueTrigger
+          width: parent.width - (addDueClear.visible ? addDueClear.width + parent.spacing : 0)
+          leftAlign: true
+          bordered: true
+          iconText: "\uf073"
+          text: addTaskView.dueKey !== "" ? addTaskView.formatDueChoice(addTaskView.dueKey) : "No due date"
+          foreground: addTaskView.dueKey !== "" ? Color.accent : Color.foreground
+          tooltipText: addTaskView.duePickerOpen ? "Hide date picker" : "Pick a due date"
+          onClicked: addTaskView.toggleDuePicker()
+        }
+
+        Button {
+          id: addDueClear
+          visible: addTaskView.dueKey !== ""
+          text: "\u2715"
+          tooltipText: "Remove due date"
+          fontSize: Style.font.caption
+          onClicked: addTaskView.clearDueDate()
+        }
+      }
+
+      AddDuePicker {
+        id: addDueGrid
+        visible: addTaskView.duePickerOpen
+      }
+    }
+
+    AddFormField {
+      label: "Category"
+
+      TextField {
+        id: addCategoryField
+        width: parent.width
+        placeholderText: "e.g. errands, home"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        onAccepted: addTaskView.trySubmit()
+        Keys.onEscapePressed: function(event) {
+          addTaskView.escapeAdd()
+          event.accepted = true
+        }
+      }
+
+      Text {
+        width: parent.width
+        text: "Comma-separated"
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        textFormat: Text.PlainText
+      }
+    }
+
+    Row {
+      width: parent.width
+      spacing: Style.space(6)
+
+      Button {
+        text: "Create Task"
+        tooltipText: "Create task"
+        foreground: Color.accent
+        bordered: true
+        enabled: addTaskView.canSubmit
+        opacity: enabled ? 1 : 0.4
+        onClicked: addTaskView.trySubmit()
+      }
+
+      Button {
+        text: "Cancel"
+        onClicked: addTaskView.cancelAdd()
+      }
+    }
+  }
+
   // --- Service signal connections ---
 
   Connections {
@@ -683,6 +1345,16 @@ Column {
     if (visible && taskService) {
       tasksView.now = new Date()
       taskService.listTasks()
+    }
+  }
+
+  // --- Tab transitions ---
+
+  onActiveTabChanged: {
+    if (activeTab === "add") {
+      addTaskView.beginAdd()
+    } else {
+      addTaskView.releaseEditing()
     }
   }
 
