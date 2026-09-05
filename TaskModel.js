@@ -118,11 +118,14 @@ function doneTasks(tasks, maxCount) {
 function parseHelperResponse(text) {
   try {
     var parsed = JSON.parse(String(text || '{}'))
+    // Write ops (create/update) return a singular `task`; list ops return a
+    // `tasks` array — normalize both so finish handlers see one shape.
+    var rawTasks = Array.isArray(parsed.tasks) ? parsed.tasks : (parsed.task ? [parsed.task] : [])
     return {
       ok: parsed.ok === true,
       provider: String(parsed.provider || ''),
       calendars: Array.isArray(parsed.calendars) ? parsed.calendars : [],
-      tasks: normalizeTasks(parsed.tasks),
+      tasks: normalizeTasks(rawTasks),
       error: parsed.error || null
     }
   } catch (error) {

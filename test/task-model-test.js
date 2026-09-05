@@ -106,6 +106,12 @@ assert.equal(okResponse.tasks.length, 1)
 assert.equal(okResponse.tasks[0].id, '1')
 assert.equal(okResponse.error, null)
 
+const singularTaskResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'caldav', task: { id: '9', uid: 'u9', title: 'New', status: 'NEEDS-ACTION' } }))
+assert.equal(singularTaskResponse.ok, true)
+assert.equal(singularTaskResponse.tasks.length, 1)
+assert.equal(singularTaskResponse.tasks[0].id, '9')
+assert.equal(singularTaskResponse.tasks[0].title, 'New')
+
 const categorizedResponse = model.parseHelperResponse(JSON.stringify({ ok: true, tasks: [{ id: '1', categories: ['Work', 'Personal'] }] }))
 assert.deepEqual(categorizedResponse.tasks[0].categories, ['Work', 'Personal'])
 
