@@ -13,6 +13,10 @@ Item {
   readonly property int maxHelperBytes: 8 * 1024 * 1024
   readonly property int maxHelperErrorBytes: 64 * 1024
   property bool debugMode: false
+  property var debugLogLines: []
+  property string debugLogText: ""
+  property int debugLogRevision: 0
+  readonly property int maxDebugLogLines: 400
 
   // Tasks properties
   property string calendarId: ""
@@ -67,7 +71,18 @@ Item {
 
   function debugLog(message) {
     if (!debugMode) return
+    var line = "[" + new Date().toTimeString().slice(0, 8) + "] " + message
+    debugLogLines.push(line)
+    if (debugLogLines.length > maxDebugLogLines) debugLogLines.splice(0, debugLogLines.length - maxDebugLogLines)
+    debugLogText = debugLogLines.join("\n")
+    debugLogRevision++
     console.log("[Service]", message)
+  }
+
+  function clearDebugLog() {
+    debugLogLines = []
+    debugLogText = ""
+    debugLogRevision++
   }
 
   function sanitizeUrl(url) {

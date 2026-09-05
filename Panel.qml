@@ -29,8 +29,7 @@ Panel {
   }
 
   function debugLog(message) {
-    if (!root.debugMode) return
-    console.log("[tasks-widget]", message)
+    if (root.calendarService) root.calendarService.debugLog(message)
   }
 
   // Status is managed by refresh() + timer (signal connection unreliable in current architecture)

@@ -21,10 +21,13 @@ BarWidget {
   function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
 
+  function serviceRef() {
+    return root.bar && root.bar.shell && root.bar.shell.serviceFor ? root.bar.shell.serviceFor(root.moduleName) : null
+  }
+
   function debugLog(message) {
-    var on = (root.settings && root.settings.debug === true)
-    if (!on) return
-    console.log("[tasks-widget]", message)
+    var svc = serviceRef()
+    if (svc) svc.debugLog(message)
   }
 
   function injectPanel() {

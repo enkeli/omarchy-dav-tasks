@@ -27,8 +27,7 @@ Column {
   }
 
   function debugLog(message) {
-    if (!calendarService || !calendarService.debugMode) return
-    console.log("[TasksView]", message)
+    if (calendarService) calendarService.debugLog(message)
   }
 
   function sanitizeUrl(url) {
@@ -596,6 +595,45 @@ Column {
         if (calendarService) calendarService.debugMode = next
         if (panel) panel.persistSettings({ debug: next })
         debugLog("action: toggle debug mode -> " + next)
+      }
+    }
+
+    Button {
+      id: clearLogsButton
+      visible: calendarService ? calendarService.debugMode : false
+      text: "Clear logs"
+      bordered: true
+      onClicked: if (calendarService) calendarService.clearDebugLog()
+    }
+
+    Rectangle {
+      width: parent.width
+      height: 220
+      radius: Style.cornerRadius
+      color: Color.popups.background
+      border.color: Color.popups.border
+      border.width: 1
+      visible: calendarService ? calendarService.debugMode : false
+
+      ScrollView {
+        id: debugLogScroll
+        anchors.fill: parent
+        anchors.margins: Style.space(2)
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+        TextArea {
+          id: debugLogArea
+          readOnly: true
+          wrapMode: TextArea.Wrap
+          textFormat: Text.PlainText
+          persistentSelection: false
+          color: Color.popups.text
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: calendarService ? calendarService.debugLogText : ""
+          background: null
+          onTextChanged: cursorPosition = text.length
+        }
       }
     }
   }
