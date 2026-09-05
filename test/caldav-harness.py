@@ -178,6 +178,99 @@ def run() -> int:
             parsed, complete = mod.events_from_ics(work_events[0].get("title") and changed[0]["ics"], calendar, None, modules, window_start, window_end)
             check("GI parse of wrapped VEVENT", complete and parsed and parsed[0]["title"] == "Seed Alpha" and parsed[0]["uid"] == "uid-alpha@test", str(parsed[:1]))
 
+        try:
+            modules = mod.load_eds_modules()
+        except Exception:
+            modules = None
+        if modules is None:
+            print("ok - caldav task writes skipped (no GI bindings)")
+        else:
+            task_calendar = {"id": "work", "name": "Work", "color": "#000", "provider": "caldav", "host": "127.0.0.1", "source": "test"}
+            original_session = mod.caldav_task_session
+            mod.caldav_task_session = lambda _calendar_id: (modules, None, None, task_calendar, work["href"], USER, PASSWORD)
+            try:
+                due = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+                created = mod.create_task_caldav("work", "Harness Task", due, "Harness description", ["Work", "Home"], 5, "needs-action", 0, None)
+                created_task = created.get("task") or {}
+                check(
+                    "caldav create-task returns a synced task payload",
+                    created.get("ok") is True
+                    and created.get("provider") == "caldav"
+                    and str(created.get("uid") or "").startswith("omarchy-calendar-")
+                    and created_task.get("title") == "Harness Task"
+                    and created_task.get("description") == "Harness description"
+                    and created_task.get("categories") == ["Work", "Home"]
+                    and created_task.get("due") == "2026-09-01T12:00:00Z"
+                    and created_task.get("priority") == 5
+                    and created_task.get("status") == "needs-action"
+                    and created_task.get("calendarId") == "work",
+                    str(created),
+                )
+                uid = str(created.get("uid") or "")
+                task_resource = mod.caldav_task_resource(work["href"], uid)
+                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                stored = raw.decode("utf-8", "replace")
+                check(
+                    "created VTODO is stored with task fields",
+                    status_code == 200
+                    and "BEGIN:VTODO" in stored
+                    and f"UID:{uid}" in stored
+                    and "CATEGORIES:Work" in stored
+                    and "CATEGORIES:Home" in stored
+                    and "PRIORITY:5" in stored
+                    and "DUE:20260901T120000Z" in stored,
+                    str((status_code, stored)),
+                )
+                task_token, task_changed, _removed, _truncated = report(mod, work["href"], token4)
+                check(
+                    "created task appears in REPORT",
+                    any(item["uid"] == uid and "BEGIN:VTODO" in (item.get("ics") or "") for item in task_changed),
+                    str(task_changed),
+                )
+                updated = mod.update_task_caldav("work", uid, "", None, "", 0, "completed", 100, None)
+                updated_task = updated.get("task") or {}
+                check(
+                    "caldav update-task completes the task",
+                    updated.get("ok") is True
+                    and updated_task.get("status") == "completed"
+                    and updated_task.get("percentComplete") == 100
+                    and updated_task.get("completed") != ""
+                    and updated_task.get("title") == "Harness Task"
+                    and updated_task.get("description") == "Harness description"
+                    and updated_task.get("categories") == ["Work", "Home"],
+                    str(updated),
+                )
+                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                updated_ics = raw.decode("utf-8", "replace")
+                check(
+                    "updated VTODO keeps carried-over properties",
+                    "STATUS:COMPLETED" in updated_ics
+                    and "PERCENT-COMPLETE:100" in updated_ics
+                    and "COMPLETED:" in updated_ics
+                    and "SUMMARY:Harness Task" in updated_ics
+                    and "CATEGORIES:Work" in updated_ics
+                    and "CATEGORIES:Home" in updated_ics,
+                    str(updated_ics),
+                )
+                reopened = mod.update_task_caldav("work", uid, "", None, "", 0, "needs-action", 0, None)
+                reopened_task = reopened.get("task") or {}
+                check(
+                    "caldav update-task reopens the task",
+                    reopened.get("ok") is True
+                    and reopened_task.get("status") == "needs-action"
+                    and reopened_task.get("percentComplete") == 0
+                    and reopened_task.get("completed") == "",
+                    str(reopened),
+                )
+                deleted = mod.delete_task_caldav("work", uid)
+                check("caldav delete-task removes the task", deleted.get("ok") is True, str(deleted))
+                status_code, _raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                check("deleted task resource is gone", status_code == 404, str(status_code))
+                _del_token, _changed, del_removed, _trunc = report(mod, work["href"], task_token)
+                check("deleted task appears as a REPORT 404", uid in del_removed, str(del_removed))
+            finally:
+                mod.caldav_task_session = original_session
+
         probe_status, probe_body = mod.caldav_propfind(work["href"], USER, PASSWORD)
         supported, probed_token, ctag = mod.parse_sync_probe(probe_body) if probe_status in (200, 207) else (False, "", "")
         check("calendar advertises sync-collection", supported is True and probed_token.startswith("http://example.test/ns/sync/"), str((supported, probed_token, ctag)))

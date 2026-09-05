@@ -29,8 +29,8 @@ class Store:
         self.stale_404s: list[str] = []
         self.truncate = False
         self.calendars = {
-            "work": {"name": "Work", "events": {}},
-            "personal": {"name": "Personal", "events": {}},
+            "work": {"name": "Work", "events": {}, "tasks": {}},
+            "personal": {"name": "Personal", "events": {}, "tasks": {}},
         }
         self.put_event("work", "file-alpha", "uid-alpha@test", "Seed Alpha", "20260825T180000Z", "20260825T181500Z")
         self.put_event("personal", "file-beta", "uid-beta@test", "Seed Beta", "20260826T180000Z", "20260826T181500Z")
@@ -62,6 +62,28 @@ class Store:
         event["deleted"] = True
         self.bump()
         event["changed"] = self.token
+        return True
+
+    def put_task(self, calendar: str, filename: str, uid: str, summary: str, ics: str) -> None:
+        cal = self.calendars[calendar]
+        cal["tasks"][filename] = {
+            "uid": uid,
+            "summary": summary,
+            "ics": ics,
+            "deleted": False,
+            "changed": self.token,
+        }
+        self.bump()
+        cal["tasks"][filename]["changed"] = self.token
+
+    def delete_task(self, calendar: str, filename: str) -> bool:
+        cal = self.calendars.get(calendar) or {}
+        task = (cal.get("tasks") or {}).get(filename)
+        if not task or task["deleted"]:
+            return False
+        task["deleted"] = True
+        self.bump()
+        task["changed"] = self.token
         return True
 
 
@@ -121,11 +143,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         calendar, filename = unquote(match.group(1)), unquote(match.group(2))
         with self._store().lock:
-            event = ((self._store().calendars.get(calendar) or {}).get("events") or {}).get(filename)
-            if not event or event["deleted"]:
+            cal = self._store().calendars.get(calendar) or {}
+            resource = (cal.get("events") or {}).get(filename) or (cal.get("tasks") or {}).get(filename)
+            if not resource or resource["deleted"]:
                 self._send(404, b"")
                 return
-            body = event["ics"].encode("utf-8")
+            body = resource["ics"].encode("utf-8")
         self._send(200, body, "text/calendar; charset=utf-8")
 
     def do_PUT(self) -> None:
@@ -139,17 +162,20 @@ class Handler(BaseHTTPRequestHandler):
         raw = self._read_body().decode("utf-8", "replace")
         uid_match = re.search(r"^UID:(.+)$", raw, re.M)
         sum_match = re.search(r"^SUMMARY:(.+)$", raw, re.M)
-        start_match = re.search(r"^DTSTART.*:(\d{8}T\d{6}Z)$", raw, re.M)
-        end_match = re.search(r"^DTEND.*:(\d{8}T\d{6}Z)$", raw, re.M)
         uid = (uid_match.group(1).strip() if uid_match else f"{filename}@test")
         summary = (sum_match.group(1).strip() if sum_match else filename)
-        start = start_match.group(1) if start_match else "20260825T180000Z"
-        end = end_match.group(1) if end_match else "20260825T181500Z"
         with self._store().lock:
             if calendar not in self._store().calendars:
                 self._send(404, b"")
                 return
-            self._store().put_event(calendar, filename, uid, summary, start, end)
+            if "BEGIN:VTODO" in raw.upper():
+                self._store().put_task(calendar, filename, uid, summary, raw)
+            else:
+                start_match = re.search(r"^DTSTART.*:(\d{8}T\d{6}Z)$", raw, re.M)
+                end_match = re.search(r"^DTEND.*:(\d{8}T\d{6}Z)$", raw, re.M)
+                start = start_match.group(1) if start_match else "20260825T180000Z"
+                end = end_match.group(1) if end_match else "20260825T181500Z"
+                self._store().put_event(calendar, filename, uid, summary, start, end)
         self._send(201, b"")
 
     def do_DELETE(self) -> None:
@@ -162,6 +188,8 @@ class Handler(BaseHTTPRequestHandler):
         calendar, filename = unquote(match.group(1)), unquote(match.group(2))
         with self._store().lock:
             ok = self._store().delete_event(calendar, filename)
+            if not ok:
+                ok = self._store().delete_task(calendar, filename)
         self._send(204 if ok else 404, b"")
 
     def do_POST(self) -> None:
@@ -182,8 +210,22 @@ class Handler(BaseHTTPRequestHandler):
                     str(payload.get("start") or "20260827T180000Z"),
                     str(payload.get("end") or "20260827T181500Z"),
                 )
+            elif op == "put-task":
+                store.put_task(
+                    str(payload["calendar"]),
+                    str(payload["filename"]),
+                    str(payload.get("uid") or payload["filename"] + "@test"),
+                    str(payload.get("summary") or "Remote Task"),
+                    str(payload.get("ics") or (
+                        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                        f"UID:{payload.get('uid') or payload['filename'] + '@test'}\r\n"
+                        "SUMMARY:Remote Task\r\nDTSTAMP:20260901T000000Z\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+                    )),
+                )
             elif op == "delete":
-                store.delete_event(str(payload["calendar"]), str(payload["filename"]))
+                ok = store.delete_event(str(payload["calendar"]), str(payload["filename"]))
+                if not ok:
+                    store.delete_task(str(payload["calendar"]), str(payload["filename"]))
             elif op == "stale-404":
                 store.stale_404s.append(str(payload.get("filename") or "gone-old"))
                 store.bump()
@@ -298,28 +340,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(207, body)
                 return
             rows = []
-            for filename, event in calendar["events"].items():
-                if event["changed"] <= client_n and client_n > 0:
-                    continue
-                href = f"/dav/user/{slug}/{filename}.ics"
-                if event["deleted"]:
+            for collection in ("events", "tasks"):
+                for filename, resource in (calendar.get(collection) or {}).items():
+                    if resource["changed"] <= client_n and client_n > 0:
+                        continue
+                    href = f"/dav/user/{slug}/{filename}.ics"
+                    if resource["deleted"]:
+                        rows.append(
+                            f"  <d:response><d:href>{href}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>"
+                        )
+                        continue
+                    ics = resource["ics"].replace("&", "&amp;").replace("<", "&lt;")
                     rows.append(
-                        f"  <d:response><d:href>{href}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>"
-                    )
-                    continue
-                ics = event["ics"].replace("&", "&amp;").replace("<", "&lt;")
-                rows.append(
-                    f"""  <d:response>
+                        f"""  <d:response>
     <d:href>{href}</d:href>
     <d:propstat>
       <d:prop>
-        <d:getetag>"{event["changed"]}"</d:getetag>
+        <d:getetag>"{resource["changed"]}"</d:getetag>
         <c:calendar-data>{ics}</c:calendar-data>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
   </d:response>"""
-                )
+                    )
             for name in store.stale_404s:
                 rows.append(
                     f"  <d:response><d:href>/dav/user/{slug}/{name}.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>"

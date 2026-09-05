@@ -902,6 +902,7 @@ Column {
     property string dueKey: ""
     property bool duePickerOpen: false
     property bool submitBusy: false
+    property string createError: ""
 
     readonly property var writableCalendars: {
       var all = calendarService && calendarService.calendars ? calendarService.calendars : []
@@ -1030,6 +1031,7 @@ Column {
       addCategoryField.text = ""
       dueKey = ""
       duePickerOpen = false
+      createError = ""
     }
 
     function trySubmit() {
@@ -1037,16 +1039,40 @@ Column {
       var title = trimText(addSummaryField.text)
       var description = String(addDescriptionField.text == null ? "" : addDescriptionField.text)
       var categories = parsedCategories()
+      createError = ""
       submitBusy = true
-      addSubmitCooldown.restart()
+      addSubmitSafety.restart()
       debugLog("action: create task calendar=" + calendarId + " due=" + (dueKey !== "" ? dueKey : "(none)") + " title=" + title)
-      // Optimistic create: the pending task appears at once, so return to
-      // the list immediately. Priority stays at its service default.
+      // Stay on the form until the service confirms the create: switching
+      // to Pending early threw the draft away whenever the helper rejected
+      // it (bad auth, wrong provider...), leaving only a flash of red.
+      // Priority stays at its service default.
       if (calendarService) {
         calendarService.createTask(calendarId, title, dueKey, undefined, description, categories)
       }
+    }
+
+    function handleCreateSuccess() {
+      if (!submitBusy) return
+      addSubmitSafety.stop()
+      submitBusy = false
       clearDraft()
       tasksView.activeTab = "pending"
+    }
+
+    function handleCreateFailure(reason) {
+      if (!submitBusy) return
+      addSubmitSafety.stop()
+      submitBusy = false
+      // Draft (summary, description, due, categories, calendar) is kept so
+      // the user can fix the cause and resubmit without retyping.
+      createError = "Couldn't create the task: " + String(reason || "something went wrong")
+    }
+
+    function handleCreateTimeout() {
+      if (!submitBusy) return
+      submitBusy = false
+      createError = "Create timed out — try again."
     }
 
     function cancelAdd() {
@@ -1072,6 +1098,7 @@ Column {
       addSummaryField.focus = false
       addDescriptionField.focus = false
       addCategoryField.focus = false
+      createError = ""
       restorePanelFocus()
     }
 
@@ -1085,10 +1112,13 @@ Column {
 
     onWritableCalendarsChanged: if (calendarId === "" || !hasCalendar(calendarId)) resetCalendar()
 
+    // In-flight guard rather than a click debounce: submitBusy releases only
+    // when the service reports success or failure. If neither ever arrives
+    // (hung helper), this re-enables the form so it cannot dead-end.
     Timer {
-      id: addSubmitCooldown
-      interval: 800
-      onTriggered: addTaskView.submitBusy = false
+      id: addSubmitSafety
+      interval: 15000
+      onTriggered: addTaskView.handleCreateTimeout()
     }
 
     // --- Add-task layout --------------------------------------------------
@@ -1298,6 +1328,19 @@ Column {
         onClicked: addTaskView.cancelAdd()
       }
     }
+
+    // Create failure feedback. Sits under the action row so the eye lands
+    // on it right after a rejected submit; fields stay editable above.
+    Text {
+      visible: addTaskView.createError !== ""
+      width: parent.width
+      text: addTaskView.createError
+      color: Color.urgent
+      wrapMode: Text.WordWrap
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
   }
 
   // --- Service signal connections ---
@@ -1316,6 +1359,11 @@ Column {
 
     function onTaskCreated(task) {
       tasksView.now = new Date()
+      addTaskView.handleCreateSuccess()
+    }
+
+    function onTaskCreateFailed(reason) {
+      addTaskView.handleCreateFailure(reason)
     }
 
     function onTaskUpdated(task) {

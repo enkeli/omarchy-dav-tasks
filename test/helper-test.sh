@@ -60,6 +60,27 @@ fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper create-task accepts task fields"
 
+if "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing --title "Tagged" --categories "Work,Home" >"$tmp" 2>/dev/null; then
+  echo "not ok - caldav create-task without calendar should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
+echo "ok - helper caldav create-task accepts caldav provider"
+
+if "$ROOT/helper/omarchy-calendar-helper" delete-task --provider caldav --calendar-id missing --uid abc >"$tmp" 2>/dev/null; then
+  echo "not ok - caldav delete-task without calendar should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
+echo "ok - helper caldav task ops accept caldav provider"
+
+if "$ROOT/helper/omarchy-calendar-helper" create-task --provider mock --calendar-id missing >"$tmp" 2>/dev/null; then
+  echo "not ok - create-task with unknown provider should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
+echo "ok - helper create-task rejects non-task providers"
+
 python3 -c 'from importlib.machinery import SourceFileLoader; import sys; mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module(); assert mod.normalize_rrule("never") == ""; assert mod.normalize_rrule("weekly") == "FREQ=WEEKLY"; assert mod.normalize_rrule("FREQ=WEEKLY;BYDAY=TU,TH") == "FREQ=WEEKLY;BYDAY=TU,TH"; assert mod.normalize_rrule("RRULE:FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1") == "FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1"; print("ok - helper rrule normalize")' "$ROOT/helper/omarchy-calendar-helper"
 
 python3 -c 'from importlib.machinery import SourceFileLoader; import sys

@@ -55,6 +55,7 @@ Item {
   signal taskCreated(var task)
   signal taskUpdated(var task)
   signal taskDeleted(string uid)
+  signal taskCreateFailed(string reason)
 
   function plainDisplay(value, maxLen) {
     var text = String(value == null ? '' : value)
@@ -91,6 +92,32 @@ Item {
 
   function failMessage(payload, fallback) {
     return plainDisplay((payload && payload.error && payload.error.message) || fallback || "Calendar helper failed", 400)
+  }
+
+  function calendarById(id) {
+    var wanted = String(id || "")
+    var lists = [cachedCalendars, calendars]
+    for (var l = 0; l < lists.length; l++) {
+      var list = lists[l] || []
+      for (var i = 0; i < list.length; i++) {
+        var calendar = list[i]
+        if (calendar && String(calendar.id || "") === wanted) return calendar
+      }
+    }
+    return null
+  }
+
+  function calendarProviderById(id) {
+    var calendar = calendarById(id)
+    return calendar && calendar.provider ? String(calendar.provider) : provider
+  }
+
+  function cleanHelperErrorText(text, fallback) {
+    var raw = String(text || "")
+    var usage = raw.match(/^usage:[\s\S]*?\n\s*\n/)
+    if (usage) raw = raw.slice(usage[0].length)
+    raw = raw.replace(/\s*\n+\s*/g, " ").trim()
+    return plainDisplay(raw, 400) || fallback
   }
 
   function helperText(out, err) {
@@ -256,7 +283,7 @@ Item {
     applyTaskCache(next, cachedCalendars)
     tasksCreateProc.command = [
       helperPath(), "create-task",
-      "--provider", provider,
+      "--provider", calendarProviderById(targetCalendar),
       "--calendar-id", targetCalendar,
       "--title", String(title || "(No title)"),
       "--due", String(due || ""),
@@ -282,6 +309,7 @@ Item {
       removePendingTask(root.tasksPendingCreateId)
       root.tasksStatus = "error"
       root.tasksErrorMessage = root.failMessage(payload, "Could not create task.")
+      root.taskCreateFailed(root.cleanHelperErrorText((payload && payload.error && payload.error.message) || tasksCreateErr.text, "Could not create task."))
     }
     root.tasksPendingCreateId = ""
   }
@@ -299,7 +327,7 @@ Item {
     mergeTask(next)
     var cmd = [
       helperPath(), "update-task",
-      "--provider", provider,
+      "--provider", calendarProviderById(task.calendarId),
       "--calendar-id", String(task.calendarId || defaultCalendarId()),
       "--uid", String(task.uid || ""),
       "--status", String(statusArg || task.status || "NEEDS-ACTION")
@@ -344,7 +372,7 @@ Item {
     removeTaskByUid(task.uid)
     tasksDeleteProc.command = [
       helperPath(), "delete-task",
-      "--provider", provider,
+      "--provider", calendarProviderById(task.calendarId),
       "--calendar-id", String(task.calendarId || defaultCalendarId()),
       "--uid", String(task.uid || "")
     ]
