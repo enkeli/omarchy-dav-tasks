@@ -10,6 +10,7 @@ Column {
 
   // Accept service as property from Panel.qml (root is not accessible from separate file)
   property var calendarService: null
+  property var panel: null
   property string viewMode: "month"
   property bool opened: false
 
@@ -22,7 +23,20 @@ Column {
 
   // Debug: log when allTasks changes
   onAllTasksChanged: {
-    console.log("[TasksView] allTasks property changed:", allTasks ? allTasks.length : 0)
+    debugLog("allTasks property changed: " + (allTasks ? allTasks.length : 0))
+  }
+
+  function debugLog(message) {
+    if (!calendarService || !calendarService.debugMode) return
+    console.log("[TasksView]", message)
+  }
+
+  function sanitizeUrl(url) {
+    return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1")
+  }
+
+  function syncTaskModelDebug() {
+    TaskModel.setDebugEnabled(calendarService && calendarService.debugMode === true)
   }
 
   // --- Inline sub-components ---
@@ -324,6 +338,7 @@ Column {
       text: calendarService && calendarService.pendingRemoveId === settingsCalendarRow.calendarId ? "Removing" : "Remove"
       bordered: true
       onClicked: {
+        debugLog("action: remove calendar " + settingsCalendarRow.calendarId)
         if (calendarService) calendarService.removeCalendar(settingsCalendarRow.calendarId)
       }
     }
@@ -445,7 +460,10 @@ Column {
       visible: !caldavForm.visible
       text: "Connect Server"
       bordered: true
-      onClicked: caldavForm.visible = true
+      onClicked: {
+        debugLog("action: open caldav form")
+        caldavForm.visible = true
+      }
     }
 
     Column {
@@ -497,6 +515,7 @@ Column {
           bordered: true
           enabled: calendarService && calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
+            debugLog("action: caldav connect " + sanitizeUrl(caldavUrlField.text))
             if (calendarService) {
               calendarService.setupCaldav("", caldavUrlField.text, caldavUsernameField.text, caldavPasswordField.text)
             }
@@ -507,6 +526,7 @@ Column {
           text: "Cancel"
           enabled: !calendarService || calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
+            debugLog("action: caldav form cancel")
             caldavUrlField.text = ""
             caldavUsernameField.text = ""
             caldavPasswordField.text = ""
@@ -545,6 +565,39 @@ Column {
         textFormat: Text.PlainText
       }
     }
+
+    Column {
+      width: parent.width
+      spacing: Style.space(4)
+
+      Text {
+        width: parent.width
+        text: "Misc"
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Color.accent
+      }
+    }
+
+    Toggle {
+      width: parent.width
+      label: "Debug mode"
+      description: "Log plugin actions to the shell console"
+      checked: calendarService ? calendarService.debugMode : false
+      onClicked: {
+        var next = !(calendarService && calendarService.debugMode)
+        if (calendarService) calendarService.debugMode = next
+        if (panel) panel.persistSettings({ debug: next })
+        debugLog("action: toggle debug mode -> " + next)
+      }
+    }
   }
 
   // --- Service signal connections ---
@@ -555,6 +608,10 @@ Column {
 
     function onRefreshed() {
       tasksView.now = new Date()
+    }
+
+    function onDebugModeChanged() {
+      TaskModel.setDebugEnabled(taskService.debugMode)
     }
 
     function onTaskCreated(task) {
@@ -581,7 +638,10 @@ Column {
 
   // --- Load tasks on creation if already visible ---
 
+  onCalendarServiceChanged: syncTaskModelDebug()
+
   Component.onCompleted: {
+    syncTaskModelDebug()
     if (visible && taskService) {
       tasksView.now = new Date()
       taskService.listTasks()

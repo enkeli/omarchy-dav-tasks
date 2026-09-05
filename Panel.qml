@@ -14,10 +14,23 @@ Panel {
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
   property var calendarService: null
+  readonly property bool debugMode: root.settings && root.settings.debug !== undefined ? root.settings.debug === true : false
 
   onBarChanged: {
     var svc = bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
     if (svc) calendarService = svc
+  }
+
+  onCalendarServiceChanged: applyDebugMode()
+  onDebugModeChanged: applyDebugMode()
+
+  function applyDebugMode() {
+    if (root.calendarService && "debugMode" in root.calendarService) root.calendarService.debugMode = root.debugMode
+  }
+
+  function debugLog(message) {
+    if (!root.debugMode) return
+    console.log("[tasks-widget]", message)
   }
 
   // Status is managed by refresh() + timer (signal connection unreliable in current architecture)
@@ -65,6 +78,7 @@ Panel {
   }
 
   function open() {
+    debugLog("action: panel open")
     root.now = new Date()
     // Do not auto-refresh with status on open; only explicit Sync button sets status
     if (!root.selectedKey) root.selectedKey = root.todayKey
@@ -74,6 +88,7 @@ Panel {
   }
 
   function close() {
+    debugLog("action: panel close")
     setCenterHoverRevealSuppressed(false)
     root.controller.hide()
   }
@@ -87,6 +102,7 @@ Panel {
   }
 
   function switchPanel(direction) {
+    debugLog("action: switch panel " + direction)
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
     return false
@@ -119,7 +135,7 @@ Panel {
   }
 
   function ensureRightAnchor() {
-    console.log("[tasks-widget] Panel.ensureRightAnchor service=", calendarService ? "ok" : "null")
+    debugLog("[Panel.ensureRightAnchor] service=" + (calendarService ? "ok" : "null"))
     if (calendarService && typeof calendarService.ensureRightAnchor === "function")
       calendarService.ensureRightAnchor()
   }
@@ -180,12 +196,18 @@ Panel {
                 ViewButton {
                   text: "Pending"
                   selected: tasksViewRoot.activeTab === "pending"
-                  onClicked: tasksViewRoot.activeTab = "pending"
+                  onClicked: {
+                    root.debugLog("action: select tab pending")
+                    tasksViewRoot.activeTab = "pending"
+                  }
                 }
                 ViewButton {
                   text: "Done"
                   selected: tasksViewRoot.activeTab === "done"
-                  onClicked: tasksViewRoot.activeTab = "done"
+                  onClicked: {
+                    root.debugLog("action: select tab done")
+                    tasksViewRoot.activeTab = "done"
+                  }
                 }
               }
 
@@ -204,11 +226,24 @@ Panel {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
-                Button { id: syncButton; text: "\uf021"; tooltipText: "Sync now"; fontFamily: root.bar ? root.bar.fontFamily : Style.font.family; onClicked: root.refresh() }
+                Button {
+                  id: syncButton
+                  text: "\uf021"
+                  tooltipText: "Sync now"
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                  onClicked: {
+                    root.debugLog("action: sync now")
+                    root.refresh()
+                  }
+                }
                 ViewButton {
                   text: "󰒓"
                   selected: tasksViewRoot.activeTab === "config"
-                  onClicked: tasksViewRoot.activeTab = tasksViewRoot.activeTab === "config" ? "pending" : "config"
+                  onClicked: {
+                    var next = tasksViewRoot.activeTab === "config" ? "pending" : "config"
+                    root.debugLog("action: select tab " + next)
+                    tasksViewRoot.activeTab = next
+                  }
                 }
               }
             }
@@ -217,6 +252,7 @@ Panel {
               id: tasksViewRoot
               width: parent.width
               calendarService: root.calendarService
+              panel: root
               viewMode: root.viewMode
               opened: root.opened
             }
