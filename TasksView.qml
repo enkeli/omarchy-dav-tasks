@@ -112,10 +112,10 @@ Column {
       if (!hasCalendarName) return 0
       var s = metaRow.spacing
       var available = metaRow.width
-      available -= calendarIcon.implicitWidth + s
+      available -= calendarIconMetrics.width + s
       if (tagText.visible) {
-        available -= separatorDot.implicitWidth + s
-        available -= tagIcon.implicitWidth + s
+        available -= separatorMetrics.width + s
+        available -= tagIconMetrics.width + s
         available -= tagText.width + s
       }
       // Done tab uses "completed" dates and its delegates are created while the
@@ -129,13 +129,46 @@ Column {
       return Math.max(0, available + s)
     }
     // Measure the calendar name independently of the delegate's layout state:
-    // Done tab delegates can be instantiated while their container is hidden,
-    // which latches calendarNameText.implicitWidth at 0.
+    // delegates can be instantiated while their container is hidden — the Done
+    // tab hit this first, and since the add form's optimistic create rebuilds
+    // the Pending list while it is hidden, every elided Text there latches
+    // implicitWidth at 0 too. TextMetrics measures pure text, so it never
+    // defers and never latches.
     TextMetrics {
       id: calendarNameMetrics
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
       text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
+    }
+    TextMetrics {
+      id: tagTextMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: taskItem.task && taskItem.task.categories && taskItem.task.categories.length > 0
+        ? TaskModel.plainDisplay(taskItem.task.categories[0], 40) : ""
+    }
+    // Icons and separator are measured too so the whole metadata-row width
+    // chain is pure: no width binding reads a Text's implicitWidth, which
+    // defers through text-layout polish and can latch at 0 (and drag the
+    // row's width bindings into re-entrancy loops) for delegates built
+    // while the tab container was hidden.
+    TextMetrics {
+      id: calendarIconMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: "\uf073"
+    }
+    TextMetrics {
+      id: tagIconMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: "\uf02b"
+    }
+    TextMetrics {
+      id: separatorMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: "\u00B7"
     }
 
     readonly property string dateText: {
@@ -200,7 +233,7 @@ Column {
           Text {
             id: calendarIcon
             visible: taskItem.hasCalendarName
-            width: visible ? implicitWidth : 0
+            width: visible ? calendarIconMetrics.width : 0
             text: "\uf073"
             color: taskItem.taskCalendarColor
             font.family: Style.font.family
@@ -211,17 +244,13 @@ Column {
           Text {
             id: calendarNameText
             visible: taskItem.hasCalendarName
-            // Content-sized first block: take only the width the calendar name needs,
-            // but elide when the tag block leaves less room than that.
+            // Content-sized first block: take only the width the calendar name
+            // needs, but elide when the tag block leaves less room than that.
+            // Measured via TextMetrics for both tabs: implicitWidth latches at
+            // 0 for delegates created while the tab container is hidden.
             width: {
               if (!visible) return 0
-              // Done tab: implicitWidth can be latched at 0 while the hidden tab
-              // instantiates its delegates, so measure the text with TextMetrics
-              // instead and clamp it to the room left by the tag block.
-              if (taskItem.dateLabel === "completed") {
-                return Math.max(0, Math.min(calendarNameMetrics.width, taskItem.calendarNameAvailableWidth))
-              }
-              return Math.min(implicitWidth, taskItem.calendarNameAvailableWidth)
+              return Math.max(0, Math.min(calendarNameMetrics.width, taskItem.calendarNameAvailableWidth))
             }
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
             color: taskItem.taskCalendarColor
@@ -234,7 +263,7 @@ Column {
           Text {
             id: separatorDot
             visible: calendarNameText.visible && tagText.visible
-            width: visible ? implicitWidth : 0
+            width: visible ? separatorMetrics.width : 0
             anchors.verticalCenter: parent.verticalCenter
             text: "\u00B7"
             color: Color.muted
@@ -246,7 +275,7 @@ Column {
           Text {
             id: tagIcon
             visible: tagText.visible
-            width: visible ? implicitWidth : 0
+            width: visible ? tagIconMetrics.width : 0
             text: "\uf02b"
             color: Color.muted
             font.family: Style.font.family
@@ -257,7 +286,9 @@ Column {
           Text {
             id: tagText
             visible: taskItem.task && taskItem.task.categories && taskItem.task.categories.length > 0
-            width: visible ? Math.max(0, Math.min(implicitWidth, parent.width * 0.45 - tagIcon.width - parent.spacing)) : 0
+            // Same TextMetrics reasoning as the calendar name: implicitWidth
+            // latches at 0 for delegates built while the tab was hidden.
+            width: visible ? Math.max(0, Math.min(tagTextMetrics.width, parent.width * 0.45 - tagIcon.width - parent.spacing)) : 0
             text: visible ? TaskModel.plainDisplay(taskItem.task.categories[0], 40) : ""
             color: Color.muted
             elide: Text.ElideRight
