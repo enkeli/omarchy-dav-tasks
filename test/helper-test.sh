@@ -60,6 +60,13 @@ fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper create-task accepts task fields"
 
+if "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing --title "Tagged" --due 2026-09-07 --priority "" >"$tmp" 2>/dev/null; then
+  echo "not ok - caldav create-task with empty priority should fail later" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
+echo "ok - helper create-task tolerates empty priority"
+
 if "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing --title "Tagged" --categories "Work,Home" >"$tmp" 2>/dev/null; then
   echo "not ok - caldav create-task without calendar should fail" >&2
   exit 1

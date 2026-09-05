@@ -286,9 +286,11 @@ Item {
       "--provider", calendarProviderById(targetCalendar),
       "--calendar-id", targetCalendar,
       "--title", String(title || "(No title)"),
-      "--due", String(due || ""),
-      "--priority", String(priority || "")
+      "--due", String(due || "")
     ]
+    // Priority is optional: an empty string would trip the helper's int
+    // argparse, so only pass the flag when a priority was chosen.
+    if (priority !== undefined && priority !== null && String(priority) !== "") tasksCreateProc.command.push("--priority", String(priority))
     if (description) tasksCreateProc.command.push("--description", String(description))
     if (categories && categories.length > 0) tasksCreateProc.command.push("--categories", categories.join(","))
     tasksCreateProc.running = true

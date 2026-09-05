@@ -2822,6 +2822,11 @@ def remove_cache_event(event_id: str) -> None:
     write_cache(cache, bump=True)
 
 
+def parse_optional_int(value: str) -> int:
+    text = str(value).strip()
+    return int(text) if text else 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
     parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
@@ -2845,7 +2850,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--if-changed", action="store_true")
     parser.add_argument("--status", default="needs-action")
     parser.add_argument("--percent-complete", type=int, default=0)
-    parser.add_argument("--priority", type=int, default=0)
+    parser.add_argument("--priority", type=parse_optional_int, default=0)
     parser.add_argument("--due", default="")
     args = parser.parse_args(argv)
 
