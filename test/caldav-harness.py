@@ -262,6 +262,43 @@ def run() -> int:
                     and reopened_task.get("completed") == "",
                     str(reopened),
                 )
+                seeded_uid = "uid-invalid-dates@test"
+                # Filename mirrors the UID: Nextcloud names task resources by
+                # UID, which is what update_task_caldav's URL build assumes.
+                control(base, {"op": "put-task", "calendar": "work", "filename": seeded_uid, "uid": seeded_uid, "ics": (
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                    f"UID:{seeded_uid}\r\nSUMMARY:Invalid Dates\r\n"
+                    "DTSTART:20260905T000000Z\r\nDUE:20260905T000000Z\r\n"
+                    "DTSTAMP:20260905T000000Z\r\nSTATUS:NEEDS-ACTION\r\n"
+                    "END:VTODO\r\nEND:VCALENDAR\r\n"
+                )})
+                completed_invalid = mod.update_task_caldav("work", seeded_uid, "", None, "", 0, "completed", 100, None)
+                check(
+                    "caldav update repairs DUE<=DTSTART tasks",
+                    completed_invalid.get("ok") is True and (completed_invalid.get("task") or {}).get("status") == "completed",
+                    str(completed_invalid),
+                )
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], seeded_uid), USER, PASSWORD, b"", {})
+                repaired = raw.decode("utf-8", "replace")
+                check(
+                    "repaired VTODO drops DTSTART and keeps DUE",
+                    status_code == 200 and "DTSTART" not in repaired and "DUE:20260905T000000Z" in repaired and "STATUS:COMPLETED" in repaired,
+                    repaired,
+                )
+                mod.delete_task_caldav("work", seeded_uid)
+
+                guard_due = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)
+                guarded = mod.create_task_caldav("work", "Guard Task", guard_due, "", [], 0, "needs-action", 0, guard_due)
+                guard_uid = str(guarded.get("uid") or "")
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], guard_uid), USER, PASSWORD, b"", {})
+                guard_ics = raw.decode("utf-8", "replace")
+                check(
+                    "created VTODO drops DTSTART when DUE<=DTSTART",
+                    bool(guard_uid) and "DTSTART" not in guard_ics and "DUE:20260905T000000Z" in guard_ics,
+                    guard_ics,
+                )
+                mod.delete_task_caldav("work", guard_uid)
+
                 control(base, {"op": "put-fault", "on": True, "status": 415})
                 faulted = ""
                 try:

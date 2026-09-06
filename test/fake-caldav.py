@@ -7,6 +7,7 @@ import base64
 import json
 import re
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
 
@@ -27,6 +28,35 @@ FAULT_BODY = (
     '<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">'
     "<s:message>Unsupported Media Type</s:message></d:error>\r\n"
 ).encode()
+
+
+def parse_ical_stamp(text: str) -> datetime | None:
+    text = text.strip().rstrip("Z")
+    for fmt in ("%Y%m%dT%H%M%S", "%Y%m%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def vtodo_date_violation(raw: str) -> bytes | None:
+    """Mirror Nextcloud's strict validation: DUE must come after DTSTART."""
+    if "BEGIN:VTODO" not in raw.upper():
+        return None
+    dtstart = re.search(r"^DTSTART[^:]*:(\S+)", raw, re.M)
+    due = re.search(r"^DUE[^:]*:(\S+)", raw, re.M)
+    if not dtstart or not due:
+        return None
+    start = parse_ical_stamp(dtstart.group(1))
+    end = parse_ical_stamp(due.group(1))
+    if start is None or end is None or end > start:
+        return None
+    return (
+        b'<?xml version="1.0" encoding="utf-8"?>\r\n'
+        b'<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">'
+        b"<s:message>Validation error in iCalendar: DUE must occur after DTSTART.</s:message></d:error>\r\n"
+    )
 
 
 class Store:
@@ -173,6 +203,10 @@ class Handler(BaseHTTPRequestHandler):
             if self._store().put_fault:
                 self._send(self._store().put_fault_status, FAULT_BODY)
                 return
+        violation = vtodo_date_violation(raw)
+        if violation:
+            self._send(415, violation)
+            return
         uid_match = re.search(r"^UID:(.+)$", raw, re.M)
         sum_match = re.search(r"^SUMMARY:(.+)$", raw, re.M)
         uid = (uid_match.group(1).strip() if uid_match else f"{filename}@test")

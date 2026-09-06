@@ -1008,7 +1008,10 @@ def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: d
         f"LAST-MODIFIED:{ics_datetime(now, False)}",
         f"SUMMARY:{ics_escape(title or '(No title)')}",
     ]
-    if dtstart:
+    # Strict CalDAV servers (Nextcloud) reject VTODOs whose DUE does not come
+    # after DTSTART; drop the redundant DTSTART when the due date is earlier
+    # or equal so the create validates.
+    if dtstart and (due is None or due > dtstart):
         lines.append(f"DTSTART:{ics_datetime(dtstart, False)}")
     if due:
         lines.append(f"DUE:{ics_datetime(due, False)}")
@@ -1185,6 +1188,19 @@ def unfold_ical_lines(text: str) -> list[str]:
     return lines
 
 
+def parse_ical_datetime(value: str) -> datetime | None:
+    """Parse an iCalendar DATE or DATE-TIME value without timezone handling."""
+    text = str(value or "").strip().upper()
+    if text.endswith("Z"):
+        text = text[:-1]
+    for pattern in ("%Y%m%dT%H%M%S", "%Y%m%d"):
+        try:
+            return datetime.strptime(text, pattern)
+        except ValueError:
+            continue
+    return None
+
+
 def caldav_vtodo_updated_document(text: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> str:
     """Rewrite mutable VTODO fields in place, carrying over all other properties."""
     status_map = {
@@ -1213,15 +1229,39 @@ def caldav_vtodo_updated_document(text: str, title: str, due: datetime | None, d
         updates["PERCENT-COMPLETE"] = f"PERCENT-COMPLETE:{percent}"
     if ical_status == "COMPLETED":
         updates["COMPLETED"] = f"COMPLETED:{ics_datetime(now, False)}"
+    # Strict CalDAV servers (Nextcloud) reject VTODO puts whose DUE does not
+    # come after DTSTART, even when neither property is being changed. Repair
+    # stored objects that violate it by dropping the redundant DTSTART: the
+    # deadline (DUE) is the meaningful field for a task.
+    unfolded = unfold_ical_lines(text)
+    source_dtstart = ""
+    source_due = ""
+    for line in unfolded:
+        name = line.split(":", 1)[0].split(";", 1)[0].strip().upper()
+        if name not in ("DTSTART", "DUE") or ":" not in line:
+            continue
+        value = line.split(":", 1)[1].strip()
+        if name == "DTSTART" and not source_dtstart:
+            source_dtstart = value
+        elif name == "DUE" and not source_due:
+            source_due = value
+    final_dtstart = dtstart if dtstart is not None else parse_ical_datetime(source_dtstart)
+    final_due = due if due is not None else parse_ical_datetime(source_due)
+    drop_dtstart = final_dtstart is not None and final_due is not None and final_due <= final_dtstart
+    if drop_dtstart:
+        updates.pop("DTSTART", None)
+        sync_log("caldav-vtodo-repair", reason="due-not-after-dtstart")
     removable = ("PERCENT-COMPLETE", "COMPLETED")
     replaced: set[str] = set()
     lines = []
-    for line in unfold_ical_lines(text):
+    for line in unfolded:
         name = line.split(":", 1)[0].split(";", 1)[0].strip().upper()
         if name in updates:
             if name not in replaced:
                 lines.append(updates[name])
                 replaced.add(name)
+            continue
+        if name == "DTSTART" and drop_dtstart:
             continue
         if name in removable and name not in updates:
             continue
