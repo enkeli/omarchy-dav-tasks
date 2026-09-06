@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -298,6 +300,34 @@ def run() -> int:
                     guard_ics,
                 )
                 mod.delete_task_caldav("work", guard_uid)
+
+                # Regression: the CLI update path used to leak the --from
+                # window default into task writes as an implicit DTSTART
+                # (rewriting stored dates and crashing the DUE/DTSTART
+                # repair with mixed naive/aware datetimes).
+                main_uid = "uid-mainflow@test"
+                control(base, {"op": "put-task", "calendar": "work", "filename": main_uid, "uid": main_uid, "ics": (
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                    f"UID:{main_uid}\r\nSUMMARY:Main Flow\r\n"
+                    "DTSTART:20260801T000000Z\r\nDUE:20260815T000000Z\r\n"
+                    "DTSTAMP:20260801T000000Z\r\nSTATUS:NEEDS-ACTION\r\n"
+                    "END:VTODO\r\nEND:VCALENDAR\r\n"
+                )})
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured):
+                    mod.main(["update-task", "--provider", "caldav", "--calendar-id", "work", "--uid", main_uid, "--status", "needs-action", "--percent-complete", "50"])
+                main_payload = json.loads(captured.getvalue())
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], main_uid), USER, PASSWORD, b"", {})
+                main_ics = raw.decode("utf-8", "replace")
+                check(
+                    "CLI update without --from keeps stored dates",
+                    main_payload.get("ok") is True
+                    and "DTSTART:20260801T000000Z" in main_ics
+                    and "DUE:20260815T000000Z" in main_ics
+                    and "PERCENT-COMPLETE:50" in main_ics,
+                    str((main_payload, main_ics)),
+                )
+                mod.delete_task_caldav("work", main_uid)
 
                 control(base, {"op": "put-fault", "on": True, "status": 415})
                 faulted = ""

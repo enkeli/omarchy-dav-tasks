@@ -1189,13 +1189,18 @@ def unfold_ical_lines(text: str) -> list[str]:
 
 
 def parse_ical_datetime(value: str) -> datetime | None:
-    """Parse an iCalendar DATE or DATE-TIME value without timezone handling."""
+    """Parse an iCalendar DATE or DATE-TIME value as UTC-aware for comparisons.
+
+    Always attaches UTC: the repair logic compares parsed stored values with
+    datetime parameters that are already timezone-aware, and mixing the two
+    raises "can't compare offset-naive and offset-aware datetimes".
+    """
     text = str(value or "").strip().upper()
     if text.endswith("Z"):
         text = text[:-1]
     for pattern in ("%Y%m%dT%H%M%S", "%Y%m%d"):
         try:
-            return datetime.strptime(text, pattern)
+            return datetime.strptime(text, pattern).replace(tzinfo=UTC)
         except ValueError:
             continue
     return None
@@ -2917,6 +2922,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--percent-complete", type=int, default=0)
     parser.add_argument("--priority", type=parse_optional_int, default=0)
     parser.add_argument("--due", default="")
+    parser.add_argument("--dtstart", default="")
     args = parser.parse_args(argv)
 
     start = parse_instant(args.start)
@@ -2984,7 +2990,11 @@ def main(argv: list[str]) -> int:
             if args.provider not in ("caldav", "eds", "evolution-data-server"):
                 raise ValueError("create-task currently requires the evolution-data-server or caldav provider.")
             due = parse_event_instant(args.due) if args.due else None
-            dtstart = start if args.start else None
+            # Tasks take their own --dtstart: the --from window default must
+            # never leak in as an implicit DTSTART (it stamped every
+            # create/update with today's midnight, producing DUE<=DTSTART
+            # objects that strict CalDAV servers reject on update).
+            dtstart = parse_event_instant(args.dtstart) if args.dtstart else None
             categories = sanitize_task_categories(str(args.categories or "").split(","))
             if args.provider == "caldav":
                 return emit_json(create_task_caldav(args.calendar_id, args.title, due, args.description, categories, args.priority, args.status, args.percent_complete, dtstart))
@@ -2995,7 +3005,7 @@ def main(argv: list[str]) -> int:
             if args.provider not in ("caldav", "eds", "evolution-data-server"):
                 raise ValueError("update-task currently requires the evolution-data-server or caldav provider.")
             due = parse_event_instant(args.due) if args.due else None
-            dtstart = start if args.start else None
+            dtstart = parse_event_instant(args.dtstart) if args.dtstart else None
             if args.provider == "caldav":
                 return emit_json(update_task_caldav(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
             return emit_json(update_task_eds(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
