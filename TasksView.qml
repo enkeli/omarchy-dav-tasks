@@ -44,6 +44,27 @@ Column {
     return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1")
   }
 
+  // VTODO priority is the string "1"-"9" (1 = highest) or "" when unset.
+  // Map to display wording; anything unparsable maps to "" so the field hides.
+  function priorityLabel(value) {
+    var p = parseInt(value, 10)
+    if (!isFinite(p) || p < 1 || p > 9) return ""
+    if (p <= 4) return "High"
+    if (p === 5) return "Medium"
+    return "Low"
+  }
+
+  // RFC 5545 VTODO status to readable wording. Status may vary in case, so
+  // compare uppercased; unknown values fall through as-is instead of hiding.
+  function statusLabel(value) {
+    var s = String(value || "").toUpperCase()
+    if (s === "NEEDS-ACTION") return "Needs action"
+    if (s === "IN-PROCESS") return "In progress"
+    if (s === "COMPLETED") return "Completed"
+    if (s === "CANCELLED") return "Cancelled"
+    return String(value || "")
+  }
+
   function syncTaskModelDebug() {
     TaskModel.setDebugEnabled(calendarService && calendarService.debugMode === true)
   }
@@ -104,6 +125,10 @@ Column {
     property var task: null
     property bool showOverdue: false
     property string dateLabel: "due"
+    // Per-delegate expansion state: clicking anywhere on the row (except the
+    // status circle) reveals the detail block below the collapsed content.
+    // Model rebuilds recreate delegates and reset this — acceptable.
+    property bool expanded: false
 
     // Case-insensitive completed check: the Done tab filters with
     // TaskModel.isCompleted, so icon/strikethrough must use the same
@@ -176,27 +201,66 @@ Column {
       text: "\u00B7"
     }
 
+    // "Mon d" this year, "Mon d, YYYY" otherwise — shared by the collapsed
+    // date column (backlog tab) and the expanded detail's Created field.
+    readonly property string createdText: {
+      if (!taskItem.task) return ""
+      var d = TaskModel.parseDateTime(taskItem.task.created)
+      if (!d) return ""
+      var month = TaskModel.SHORT_MONTH_NAMES[d.getMonth()]
+      var day = d.getDate()
+      var year = d.getFullYear()
+      if (year === new Date().getFullYear()) return month + " " + day
+      return month + " " + day + ", " + year
+    }
+
     readonly property string dateText: {
       if (!taskItem.task) return ""
       if (taskItem.dateLabel === "completed") return TaskModel.formatCompletedDate(taskItem.task)
-      if (taskItem.dateLabel === "created") {
-        var d = TaskModel.parseDateTime(taskItem.task.created)
-        if (!d) return ""
-        var month = TaskModel.SHORT_MONTH_NAMES[d.getMonth()]
-        var day = d.getDate()
-        var year = d.getFullYear()
-        if (year === new Date().getFullYear()) return month + " " + day
-        return month + " " + day + ", " + year
-      }
+      if (taskItem.dateLabel === "created") return taskItem.createdText
       return TaskModel.formatDueDate(taskItem.task)
     }
 
-    height: taskRow.implicitHeight + Style.space(6)
+    // Expanded detail values. All user-sourced strings are re-sanitized at
+    // display time (categories bypass plainDisplay during normalization);
+    // empty values hide their detail fields.
+    readonly property string detailDescriptionText: taskItem.task ? TaskModel.plainDisplay(taskItem.task.description, 2000) : ""
+    readonly property string detailCategoriesText: taskItem.task && taskItem.task.categories && taskItem.task.categories.length > 0
+      ? TaskModel.plainDisplay(taskItem.task.categories.join(", "), 400) : ""
+    readonly property string detailStatusText: taskItem.task ? statusLabel(taskItem.task.status) : ""
+    readonly property string detailPriorityText: taskItem.task ? priorityLabel(taskItem.task.priority) : ""
+    readonly property string detailDueText: taskItem.task ? TaskModel.formatDueDate(taskItem.task) : ""
+    readonly property string detailCompletedText: taskItem.task ? TaskModel.formatCompletedDate(taskItem.task) : ""
+
+    // Collapsed rows keep the original one-line height (row + 6 = 3 top /
+    // 3 bottom padding). Expanded rows append the detail block: gap above the
+    // divider + detail content + extra bottom padding, so the open card is
+    // roomier at the bottom than the collapsed row. detailColumn.implicitHeight
+    // comes only from wrapped texts laid out with pure parent.width chains —
+    // it never depends on this Rectangle's height, so reading it here cannot
+    // form a binding loop with the width math.
+    height: taskItem.expanded
+      ? taskRow.implicitHeight + Style.space(6) + Style.space(4) + detailColumn.implicitHeight + Style.space(3)
+      : taskRow.implicitHeight + Style.space(6)
     radius: Style.cornerRadius
+    // The detail block hangs below the collapsed content; while the height
+    // animates it is revealed inside this clip instead of overflowing onto
+    // the next row.
+    clip: true
     // statusCompleteMouse sits on top of taskItemMouse over the circle, so it
     // owns the hover grab there; OR it in to keep the row highlighted while
-    // the cursor is on the glyph.
-    color: taskItemMouse.containsMouse || statusCompleteMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent) : "transparent"
+    // the cursor is on the glyph. Expanded rows hold the fill so the open
+    // card reads as active even without the cursor over it.
+    color: taskItem.expanded || taskItemMouse.containsMouse || statusCompleteMouse.containsMouse
+      ? Style.hoverFillFor(Color.foreground, Color.accent)
+      : "transparent"
+
+    // Curtain-reveal for the detail: animating the height opens/closes over
+    // the clipped content. Pure retarget of the binding above — the inputs
+    // (row implicit height, detail implicit height) never depend on height.
+    Behavior on height {
+      NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+    }
 
     Row {
       id: taskRow
@@ -204,7 +268,12 @@ Column {
       anchors.right: parent.right
       anchors.leftMargin: Style.space(8)
       anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+      // Top-anchored instead of vertically centered: the expanded detail
+      // block anchors below this row. Collapsed appearance is unchanged —
+      // height = row + 6 with this space(3) top margin splits into the same
+      // 3 top / 3 bottom padding the vertical centering produced.
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(3)
       spacing: Style.space(6)
 
       Text {
@@ -327,11 +396,115 @@ Column {
       }
     }
 
+    // Expanded task detail, hanging below the collapsed row and indented to
+    // the title column (past the status glyph — the same statusIcon.width the
+    // collapsed width chain already reads). The column stays laid out at all
+    // times and is revealed by opacity; nothing in here is interactive, and
+    // collapsed rows clip it away. All widths are parent.width + wrapMode —
+    // no binding reads an implicitWidth of a Text that could have been built
+    // while its tab container was hidden, so no width chain can latch at 0.
+    Column {
+      id: detailColumn
+      anchors.left: taskRow.left
+      anchors.right: taskRow.right
+      anchors.top: taskRow.bottom
+      anchors.topMargin: Style.space(4)
+      anchors.leftMargin: statusIcon.width + taskRow.spacing
+      spacing: Style.space(4)
+      opacity: taskItem.expanded ? 1 : 0
+
+      Behavior on opacity {
+        NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Util.alpha(Color.foreground, 0.15)
+      }
+
+      TaskDetailField {
+        width: parent.width
+        label: "Description"
+        value: taskItem.detailDescriptionText
+        prominent: true
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Status"
+          value: taskItem.detailStatusText
+        }
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Priority"
+          value: taskItem.detailPriorityText
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Calendar"
+          value: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 120) : ""
+          valueColor: taskItem.taskCalendarColor
+        }
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Due"
+          value: taskItem.detailDueText
+        }
+      }
+
+      TaskDetailField {
+        width: parent.width
+        label: "Categories"
+        value: taskItem.detailCategoriesText
+      }
+
+      Row {
+        // Hide the whole row when neither timestamp exists so the detail
+        // column skips it (and its spacing) instead of leaving an empty gap.
+        visible: taskItem.createdText !== "" || taskItem.detailCompletedText !== ""
+        width: parent.width
+        spacing: Style.space(6)
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Created"
+          value: taskItem.createdText
+        }
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Completed"
+          value: taskItem.detailCompletedText
+        }
+      }
+    }
+
     MouseArea {
       id: taskItemMouse
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      // Toggle the expanded detail. The status circle's MouseArea is declared
+      // after this one, so completing from the glyph still wins there, and
+      // the circle click never toggles expansion.
+      onClicked: {
+        if (!taskItem.task) return
+        taskItem.expanded = !taskItem.expanded
+        tasksView.debugLog("action: " + (taskItem.expanded ? "expand" : "collapse") + " task " + taskItem.task.uid)
+      }
     }
 
     // Circle click target: completes a pending task. The glyph itself is the
@@ -354,6 +527,43 @@ Column {
         tasksView.debugLog("action: complete task " + taskItem.task.uid)
         tasksView.taskService.completeTask(taskItem.task)
       }
+    }
+  }
+
+  // One label/value pair inside the expanded task detail: small muted
+  // caption label above the value — the same pattern AddFormField uses. The
+  // field hides itself when its value is empty, and every width is
+  // parent.width + wrapMode so nothing here can feed an implicitWidth latch
+  // for delegates built while their tab container was hidden.
+  component TaskDetailField: Column {
+    id: taskDetailField
+    property string label: ""
+    property string value: ""
+    property bool prominent: false
+    property color valueColor: Color.foreground
+
+    visible: taskDetailField.value !== ""
+    width: parent.width
+    spacing: Style.space(1)
+
+    Text {
+      width: parent.width
+      text: taskDetailField.label
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      textFormat: Text.PlainText
+    }
+
+    Text {
+      width: parent.width
+      text: taskDetailField.value
+      color: taskDetailField.valueColor
+      wrapMode: Text.Wrap
+      font.family: Style.font.family
+      font.pixelSize: taskDetailField.prominent ? Style.font.bodySmall : Style.font.caption
+      textFormat: Text.PlainText
     }
   }
 
