@@ -21,7 +21,7 @@ fi
 
 gh release create "${TAG}" \
   --target "${SHA}" \
-  --title "CalDav Calendar ${VERSION}" \
+  --title "Nextcloud Tasks ${VERSION}" \
   --generate-notes
 
 echo "Created ${TAG} at ${SHA}"

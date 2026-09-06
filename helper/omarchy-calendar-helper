@@ -1514,7 +1514,7 @@ def caldav_propfind(url: str, username: str, password: str, timeout: float = 8.0
     request = urllib.request.Request(url, data=PROPFIND_BODY, method="PROPFIND")
     request.add_header("Depth", "1")
     request.add_header("Content-Type", "application/xml; charset=utf-8")
-    request.add_header("User-Agent", "CalDav-Calendar/1.0")
+    request.add_header("User-Agent", "omarchy-dav-tasks/1.0")
     manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     parsed = urlsplit(url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
@@ -1779,7 +1779,7 @@ def lookup_source_credentials(source, registry, modules: EdsModules) -> tuple[st
 
 def caldav_http(method: str, url: str, username: str, password: str, body: bytes = b"", headers: dict | None = None, timeout: float = 25.0) -> tuple[int, bytes, object]:
     request = urllib.request.Request(url, data=body or None, method=method)
-    request.add_header("User-Agent", "CalDav-Calendar/1.0")
+    request.add_header("User-Agent", "omarchy-dav-tasks/1.0")
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()

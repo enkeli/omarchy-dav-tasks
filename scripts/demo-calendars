@@ -195,7 +195,7 @@ def write_ics(calendar_id, events):
     body = "\n".join([
         "BEGIN:VCALENDAR",
         "CALSCALE:GREGORIAN",
-        "PRODID:-//Omarchy CalDav Calendar//Demo//EN",
+        "PRODID:-//dev.enkeli.omarchy-dav-tasks//Demo//EN",
         "VERSION:2.0",
         f"X-EVOLUTION-DATA-REVISION:{stamp(local_now())}(0)",
         *events,
