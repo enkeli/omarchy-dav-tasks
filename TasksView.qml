@@ -105,6 +105,11 @@ Column {
     property bool showOverdue: false
     property string dateLabel: "due"
 
+    // Case-insensitive completed check: the Done tab filters with
+    // TaskModel.isCompleted, so icon/strikethrough must use the same
+    // predicate or non-uppercase statuses render as pending circles.
+    readonly property bool completed: taskItem.task && TaskModel.isCompleted(taskItem.task)
+
     readonly property color taskCalendarColor: taskItem.task && taskItem.task.calendarColor ? taskItem.task.calendarColor : Color.muted
     readonly property bool overdue: taskItem.showOverdue && taskItem.task && TaskModel.isOverdue(taskItem.task, tasksView.now)
     readonly property bool hasCalendarName: taskItem.task && taskItem.task.calendarName
@@ -205,10 +210,10 @@ Column {
       Text {
         id: statusIcon
         anchors.verticalCenter: parent.verticalCenter
-        text: taskItem.task && taskItem.task.status === "COMPLETED" ? "\u2713" : "\u25CB"
+        text: taskItem.completed ? "\u2713" : "\u25CB"
         // Completed rows keep the static muted check; pending rows light up
         // accent while the cursor is on the click target to hint "click me".
-        color: taskItem.task && taskItem.task.status === "COMPLETED" ? Color.muted
+        color: taskItem.completed ? Color.muted
           : statusCompleteMouse.containsMouse ? Color.accent : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -228,6 +233,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           font.bold: taskItem.overdue
+          font.strikeout: taskItem.completed
           textFormat: Text.PlainText
         }
 
@@ -341,7 +347,7 @@ Column {
       width: Style.space(18)
       height: Style.space(18)
       hoverEnabled: true
-      enabled: taskItem.task && taskItem.task.status !== "COMPLETED"
+      enabled: taskItem.task && !taskItem.completed
       cursorShape: Qt.PointingHandCursor
       onClicked: {
         if (!tasksView.taskService || !taskItem.task) return
