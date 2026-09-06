@@ -129,6 +129,9 @@ Column {
     // status circle) reveals the detail block below the collapsed content.
     // Model rebuilds recreate delegates and reset this — acceptable.
     property bool expanded: false
+    // Two-step delete confirmation: armed by the footer button's first click,
+    // fired by the second, disarmed by timeout, collapse, or model rebuild.
+    property bool deleteArmed: false
 
     // Case-insensitive completed check: the Done tab filters with
     // TaskModel.isCompleted, so icon/strikethrough must use the same
@@ -396,13 +399,32 @@ Column {
       }
     }
 
+    // Row toggle: expands/collapses the detail block. Declared BEFORE
+    // detailColumn so the interactive delete footer inside it stacks on top;
+    // the detail's plain texts accept no clicks or hover, so clicks over them
+    // fall through to here and still collapse the row. The status circle's
+    // MouseArea is declared after everything else, so completing from the
+    // glyph still wins there and a circle click never toggles expansion.
+    MouseArea {
+      id: taskItemMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!taskItem.task) return
+        taskItem.expanded = !taskItem.expanded
+        tasksView.debugLog("action: " + (taskItem.expanded ? "expand" : "collapse") + " task " + taskItem.task.uid)
+      }
+    }
+
     // Expanded task detail, hanging below the collapsed row and indented to
     // the title column (past the status glyph — the same statusIcon.width the
     // collapsed width chain already reads). The column stays laid out at all
-    // times and is revealed by opacity; nothing in here is interactive, and
-    // collapsed rows clip it away. All widths are parent.width + wrapMode —
-    // no binding reads an implicitWidth of a Text that could have been built
-    // while its tab container was hidden, so no width chain can latch at 0.
+    // times and is revealed by opacity; collapsed rows clip it away, and the
+    // footer button is disabled while collapsed because opacity does not
+    // block hit-testing. All widths are parent.width + wrapMode — no binding
+    // reads an implicitWidth of a Text that could have been built while its
+    // tab container was hidden, so no width chain can latch at 0.
     Column {
       id: detailColumn
       anchors.left: taskRow.left
@@ -490,20 +512,44 @@ Column {
           value: taskItem.detailCompletedText
         }
       }
-    }
 
-    MouseArea {
-      id: taskItemMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      // Toggle the expanded detail. The status circle's MouseArea is declared
-      // after this one, so completing from the glyph still wins there, and
-      // the circle click never toggles expansion.
-      onClicked: {
-        if (!taskItem.task) return
-        taskItem.expanded = !taskItem.expanded
-        tasksView.debugLog("action: " + (taskItem.expanded ? "expand" : "collapse") + " task " + taskItem.task.uid)
+      // Destructive footer: the first click arms (the label swaps to an
+      // explicit confirm), a second click fires the delete. Arming expires
+      // via deleteArmTimer, and collapse or a model rebuild disarms. Kept
+      // compact and right-aligned — like the config tab's Remove action — so
+      // the irreversible target stays small and out of the reading flow.
+      Item {
+        width: parent.width
+        height: deleteTaskButton.height + Style.space(2)
+
+        Button {
+          id: deleteTaskButton
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: taskItem.deleteArmed ? "Confirm delete?" : "Delete"
+          iconText: "\uf1f8"
+          tooltipText: taskItem.deleteArmed ? "Click again to delete this task" : "Delete this task"
+          foreground: Color.urgent
+          bordered: true
+          // Mirrors the Remove-calendar guard: one in-flight delete at a time
+          // service-wide. The expanded gate also keeps the opacity-hidden
+          // detail from catching clicks aimed at the next row while this row
+          // is collapsed (opacity does not block hit-testing).
+          enabled: taskItem.expanded && tasksView.taskService && !tasksView.taskService.pendingDeleteUid
+          onClicked: {
+            if (!taskItem.task) return
+            if (!taskItem.deleteArmed) {
+              taskItem.deleteArmed = true
+              deleteArmTimer.restart()
+              tasksView.debugLog("action: arm delete task " + taskItem.task.uid)
+              return
+            }
+            taskItem.deleteArmed = false
+            deleteArmTimer.stop()
+            tasksView.debugLog("action: delete task " + taskItem.task.uid)
+            tasksView.taskService.deleteTask(taskItem.task)
+          }
+        }
       }
     }
 
@@ -527,6 +573,20 @@ Column {
         tasksView.debugLog("action: complete task " + taskItem.task.uid)
         tasksView.taskService.completeTask(taskItem.task)
       }
+    }
+
+    // Collapse always disarms the delete confirm (and stops its timer); a
+    // model rebuild replaces the delegate and drops the state for free.
+    onExpandedChanged: {
+      if (taskItem.expanded) return
+      taskItem.deleteArmed = false
+      deleteArmTimer.stop()
+    }
+
+    Timer {
+      id: deleteArmTimer
+      interval: 4000
+      onTriggered: taskItem.deleteArmed = false
     }
   }
 
