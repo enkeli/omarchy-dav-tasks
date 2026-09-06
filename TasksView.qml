@@ -513,15 +513,47 @@ Column {
         }
       }
 
-      // Destructive footer: the first click arms (the label swaps to an
-      // explicit confirm), a second click fires the delete. Arming expires
-      // via deleteArmTimer, and collapse or a model rebuild disarms. Kept
-      // compact and right-aligned — like the config tab's Remove action — so
-      // the irreversible target stays small and out of the reading flow.
+      // Footer actions. The completion toggle (left, accent) is reversible —
+      // single click, same one-click contract as the status circle, plus the
+      // only way back for completed rows whose circle is disabled. The
+      // destructive delete (right, urgent) keeps its two-step confirm. Each
+      // button anchors to its outer edge, so a label swap never shifts the
+      // click target away from the cursor. Both are disabled while the row
+      // is collapsed: the detail is revealed by opacity, and opacity does
+      // not block hit-testing, so hidden controls must never take input.
       Item {
         width: parent.width
-        height: deleteTaskButton.height + Style.space(2)
+        height: Math.max(completionButton.height, deleteTaskButton.height) + Style.space(2)
 
+        // Label/icon are driven by the case-insensitive completed check, not
+        // the tab, so the same affordance generalizes across Pending and Done.
+        Button {
+          id: completionButton
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: taskItem.completed ? "Not Completed" : "Completed"
+          iconText: taskItem.completed ? "\uf0e2" : "\uf00c"
+          tooltipText: taskItem.completed ? "Mark as not completed" : "Mark as completed"
+          foreground: Color.accent
+          bordered: true
+          enabled: taskItem.expanded && tasksView.taskService
+          onClicked: {
+            if (!taskItem.task) return
+            if (taskItem.completed) {
+              tasksView.debugLog("action: reopen task " + taskItem.task.uid)
+              tasksView.taskService.updateTask(taskItem.task, "NEEDS-ACTION", 0)
+              return
+            }
+            tasksView.debugLog("action: complete task " + taskItem.task.uid)
+            tasksView.taskService.completeTask(taskItem.task)
+          }
+        }
+
+        // Destructive delete: the first click arms (the label swaps to an
+        // explicit confirm), a second click fires the delete. Arming expires
+        // via deleteArmTimer, and collapse or a model rebuild disarms. Kept
+        // compact and right-aligned — like the config tab's Remove action — so
+        // the irreversible target stays small and out of the reading flow.
         Button {
           id: deleteTaskButton
           anchors.right: parent.right
