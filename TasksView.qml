@@ -188,7 +188,10 @@ Column {
 
     height: taskRow.implicitHeight + Style.space(6)
     radius: Style.cornerRadius
-    color: taskItemMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent) : "transparent"
+    // statusCompleteMouse sits on top of taskItemMouse over the circle, so it
+    // owns the hover grab there; OR it in to keep the row highlighted while
+    // the cursor is on the glyph.
+    color: taskItemMouse.containsMouse || statusCompleteMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent) : "transparent"
 
     Row {
       id: taskRow
@@ -203,7 +206,10 @@ Column {
         id: statusIcon
         anchors.verticalCenter: parent.verticalCenter
         text: taskItem.task && taskItem.task.status === "COMPLETED" ? "\u2713" : "\u25CB"
-        color: taskItem.task && taskItem.task.status === "COMPLETED" ? Color.muted : Color.foreground
+        // Completed rows keep the static muted check; pending rows light up
+        // accent while the cursor is on the click target to hint "click me".
+        color: taskItem.task && taskItem.task.status === "COMPLETED" ? Color.muted
+          : statusCompleteMouse.containsMouse ? Color.accent : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         textFormat: Text.PlainText
@@ -320,6 +326,28 @@ Column {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+    }
+
+    // Circle click target: completes a pending task. The glyph itself is the
+    // first child of taskRow (x = 0 within the row), so anchoring the target
+    // to taskRow's left edge pins it over the glyph. Fixed 18x18 size gives a
+    // comfortable hit target without changing the row height or the width
+    // math that reads statusIcon.width. Declared after taskItemMouse so it is
+    // on top and receives clicks/hover over the circle.
+    MouseArea {
+      id: statusCompleteMouse
+      anchors.left: taskRow.left
+      anchors.verticalCenter: taskRow.verticalCenter
+      width: Style.space(18)
+      height: Style.space(18)
+      hoverEnabled: true
+      enabled: taskItem.task && taskItem.task.status !== "COMPLETED"
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!tasksView.taskService || !taskItem.task) return
+        tasksView.debugLog("action: complete task " + taskItem.task.uid)
+        tasksView.taskService.completeTask(taskItem.task)
+      }
     }
   }
 
