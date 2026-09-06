@@ -14,10 +14,22 @@ Panel {
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
   property var calendarService: null
+  readonly property bool debugMode: root.settings && root.settings.debug !== undefined ? root.settings.debug === true : false
 
   onBarChanged: {
     var svc = bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
     if (svc) calendarService = svc
+  }
+
+  onCalendarServiceChanged: applyDebugMode()
+  onDebugModeChanged: applyDebugMode()
+
+  function applyDebugMode() {
+    if (root.calendarService && "debugMode" in root.calendarService) root.calendarService.debugMode = root.debugMode
+  }
+
+  function debugLog(message) {
+    if (root.calendarService) root.calendarService.debugLog(message)
   }
 
   // Status is managed by refresh() + timer (signal connection unreliable in current architecture)
@@ -45,6 +57,21 @@ Panel {
   property date now: new Date()
   property string syncStatus: ""
 
+  // Task-create feedback mapped from the service status machine. Sync-flow
+  // text keeps precedence (it has its own clear timers); service "error" is
+  // deliberately not surfaced here — the add form's inline error is the
+  // single failure surface.
+  readonly property string serviceTaskStatus: calendarService && calendarService.tasksStatus !== undefined
+    ? String(calendarService.tasksStatus)
+    : ""
+
+  function bannerText() {
+    if (root.syncStatus !== "") return root.syncStatus
+    if (root.serviceTaskStatus === "adding") return "Adding task..."
+    if (root.serviceTaskStatus === "added") return "Task added successfully"
+    return ""
+  }
+
   Timer {
     id: statusClearTimer2
     interval: 2000
@@ -65,15 +92,20 @@ Panel {
   }
 
   function open() {
+    debugLog("action: panel open")
     root.now = new Date()
     // Do not auto-refresh with status on open; only explicit Sync button sets status
     if (!root.selectedKey) root.selectedKey = root.todayKey
+    // Reopen must not leave the add-task form owning the keyboard: drop the
+    // picker and editor focus (the typed draft itself is kept).
+    if (typeof tasksViewRoot.releaseEditing === "function") tasksViewRoot.releaseEditing()
     if (calendarService) calendarService.listTasks()
     root.controller.show()
     Qt.callLater(function() { if (root.opened) setCenterHoverRevealSuppressed(true) })
   }
 
   function close() {
+    debugLog("action: panel close")
     setCenterHoverRevealSuppressed(false)
     root.controller.hide()
   }
@@ -87,6 +119,7 @@ Panel {
   }
 
   function switchPanel(direction) {
+    debugLog("action: switch panel " + direction)
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
     return false
@@ -119,9 +152,15 @@ Panel {
   }
 
   function ensureRightAnchor() {
-    console.log("[tasks-widget] Panel.ensureRightAnchor service=", calendarService ? "ok" : "null")
+    debugLog("[Panel.ensureRightAnchor] service=" + (calendarService ? "ok" : "null"))
     if (calendarService && typeof calendarService.ensureRightAnchor === "function")
       calendarService.ensureRightAnchor()
+  }
+
+  // Give keyboard focus back to the panel cursor after an inline editor
+  // (add-task fields, date picker) releases it.
+  function focusKeyCatcher() {
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
   Timer {
@@ -145,6 +184,10 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // While the add-task form owns the keyboard (text fields, calendar
+      // dropdown popup, due-date picker) the panel cursor must stand down
+      // so typing reaches the fields — same contract as the shell panels.
+      blocked: tasksViewRoot.formEditing
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -180,22 +223,28 @@ Panel {
                 ViewButton {
                   text: "Pending"
                   selected: tasksViewRoot.activeTab === "pending"
-                  onClicked: tasksViewRoot.activeTab = "pending"
+                  onClicked: {
+                    root.debugLog("action: select tab pending")
+                    tasksViewRoot.activeTab = "pending"
+                  }
                 }
                 ViewButton {
                   text: "Done"
                   selected: tasksViewRoot.activeTab === "done"
-                  onClicked: tasksViewRoot.activeTab = "done"
+                  onClicked: {
+                    root.debugLog("action: select tab done")
+                    tasksViewRoot.activeTab = "done"
+                  }
                 }
               }
 
               Text {
                 anchors.centerIn: parent
-                text: root.syncStatus
-                visible: root.syncStatus !== ""
+                text: root.bannerText()
+                visible: root.bannerText() !== ""
                 color: root.syncStatus.includes("failed") ? "#ff6b6b" : Color.foreground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.small
+                font.pixelSize: Style.font.bodySmall
               }
 
               Row {
@@ -204,11 +253,36 @@ Panel {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
-                Button { id: syncButton; text: "\uf021"; tooltipText: "Sync now"; fontFamily: root.bar ? root.bar.fontFamily : Style.font.family; onClicked: root.refresh() }
+                Button {
+                  id: addTaskButton
+                  text: "Add Task"
+                  iconText: "\uf067"
+                  tooltipText: "Add a new task"
+                  foreground: Color.accent
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                  onClicked: {
+                    root.debugLog("action: open add task")
+                    tasksViewRoot.activeTab = "add"
+                  }
+                }
+                Button {
+                  id: syncButton
+                  text: "\uf021"
+                  tooltipText: "Sync now"
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                  onClicked: {
+                    root.debugLog("action: sync now")
+                    root.refresh()
+                  }
+                }
                 ViewButton {
                   text: "󰒓"
                   selected: tasksViewRoot.activeTab === "config"
-                  onClicked: tasksViewRoot.activeTab = tasksViewRoot.activeTab === "config" ? "pending" : "config"
+                  onClicked: {
+                    var next = tasksViewRoot.activeTab === "config" ? "pending" : "config"
+                    root.debugLog("action: select tab " + next)
+                    tasksViewRoot.activeTab = next
+                  }
                 }
               }
             }
@@ -217,6 +291,7 @@ Panel {
               id: tasksViewRoot
               width: parent.width
               calendarService: root.calendarService
+              panel: root
               viewMode: root.viewMode
               opened: root.opened
             }

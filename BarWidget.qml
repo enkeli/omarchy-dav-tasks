@@ -21,6 +21,15 @@ BarWidget {
   function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
 
+  function serviceRef() {
+    return root.bar && root.bar.shell && root.bar.shell.serviceFor ? root.bar.shell.serviceFor(root.moduleName) : null
+  }
+
+  function debugLog(message) {
+    var svc = serviceRef()
+    if (svc) svc.debugLog(message)
+  }
+
   function injectPanel() {
     var target = panelLoader.item
     if (!target) return
@@ -41,9 +50,9 @@ BarWidget {
     active: true
     source: Qt.resolvedUrl("Panel.qml")
     visible: false
-    onStatusChanged: console.log("[tasks-widget] panelLoader status=", status, "error=", source)
+    onStatusChanged: root.debugLog("[panelLoader] status=" + status + " error=" + source)
     onLoaded: {
-      console.log("[tasks-widget] panelLoader onLoaded")
+      root.debugLog("panelLoader onLoaded")
       root.injectPanel()
       Qt.callLater(root.injectPanel)
     }
@@ -58,6 +67,7 @@ BarWidget {
     hasVisualContent: true
 
     onPressed: function(b) {
+      root.debugLog("action: toggle popup")
       root.togglePanel()
     }
   }

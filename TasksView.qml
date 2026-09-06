@@ -10,6 +10,7 @@ Column {
 
   // Accept service as property from Panel.qml (root is not accessible from separate file)
   property var calendarService: null
+  property var panel: null
   property string viewMode: "month"
   property bool opened: false
 
@@ -17,12 +18,55 @@ Column {
   property string activeTab: "pending"
   property date now: new Date()
 
+  // True while the add-task view owns keyboard input (text fields focused,
+  // calendar dropdown popup open, due-date picker open). Panel.qml binds the
+  // key catcher's `blocked` to this so typing reaches the form.
+  readonly property bool formEditing: activeTab === "add" && (
+    addSummaryField.activeFocus
+    || addDescriptionField.activeFocus
+    || addCategoryField.activeFocus
+    || addCalendarDropdown.popupOpen
+    || addDueGrid.popupOpen)
+
   // Direct binding to taskService.allTasks - this should update when the property changes
   readonly property var allTasks: taskService ? taskService.allTasks : []
 
   // Debug: log when allTasks changes
   onAllTasksChanged: {
-    console.log("[TasksView] allTasks property changed:", allTasks ? allTasks.length : 0)
+    debugLog("allTasks property changed: " + (allTasks ? allTasks.length : 0))
+  }
+
+  function debugLog(message) {
+    if (calendarService) calendarService.debugLog(message)
+  }
+
+  function sanitizeUrl(url) {
+    return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1")
+  }
+
+  // VTODO priority is the string "1"-"9" (1 = highest) or "" when unset.
+  // Map to display wording; anything unparsable maps to "" so the field hides.
+  function priorityLabel(value) {
+    var p = parseInt(value, 10)
+    if (!isFinite(p) || p < 1 || p > 9) return ""
+    if (p <= 4) return "High"
+    if (p === 5) return "Medium"
+    return "Low"
+  }
+
+  // RFC 5545 VTODO status to readable wording. Status may vary in case, so
+  // compare uppercased; unknown values fall through as-is instead of hiding.
+  function statusLabel(value) {
+    var s = String(value || "").toUpperCase()
+    if (s === "NEEDS-ACTION") return "Needs action"
+    if (s === "IN-PROCESS") return "In progress"
+    if (s === "COMPLETED") return "Completed"
+    if (s === "CANCELLED") return "Cancelled"
+    return String(value || "")
+  }
+
+  function syncTaskModelDebug() {
+    TaskModel.setDebugEnabled(calendarService && calendarService.debugMode === true)
   }
 
   // --- Inline sub-components ---
@@ -81,27 +125,145 @@ Column {
     property var task: null
     property bool showOverdue: false
     property string dateLabel: "due"
+    // Per-delegate expansion state: clicking anywhere on the row (except the
+    // status circle) reveals the detail block below the collapsed content.
+    // Model rebuilds recreate delegates and reset this — acceptable.
+    property bool expanded: false
+    // Two-step delete confirmation: armed by the footer button's first click,
+    // fired by the second, disarmed by timeout, collapse, or model rebuild.
+    property bool deleteArmed: false
+
+    // Case-insensitive completed check: the Done tab filters with
+    // TaskModel.isCompleted, so icon/strikethrough must use the same
+    // predicate or non-uppercase statuses render as pending circles.
+    readonly property bool completed: taskItem.task && TaskModel.isCompleted(taskItem.task)
 
     readonly property color taskCalendarColor: taskItem.task && taskItem.task.calendarColor ? taskItem.task.calendarColor : Color.muted
     readonly property bool overdue: taskItem.showOverdue && taskItem.task && TaskModel.isOverdue(taskItem.task, tasksView.now)
+    readonly property bool hasCalendarName: taskItem.task && taskItem.task.calendarName
+    readonly property real calendarNameAvailableWidth: {
+      if (!hasCalendarName) return 0
+      var s = metaRow.spacing
+      var available = metaRow.width
+      available -= calendarIconMetrics.width + s
+      if (tagText.visible) {
+        available -= separatorMetrics.width + s
+        available -= tagIconMetrics.width + s
+        available -= tagText.width + s
+      }
+      // Done tab uses "completed" dates and its delegates are created while the
+      // tab container is becoming visible, so the metadata row can still report
+      // visible:false during layout. Compute width from the row geometry anyway
+      // so the calendar name does not collapse to zero.
+      if (dateLabel === "completed") {
+        return Math.max(Style.space(8), available + s)
+      }
+      if (!metaRow.visible) return 0
+      return Math.max(0, available + s)
+    }
+    // Measure the calendar name independently of the delegate's layout state:
+    // delegates can be instantiated while their container is hidden — the Done
+    // tab hit this first, and since the add form's optimistic create rebuilds
+    // the Pending list while it is hidden, every elided Text there latches
+    // implicitWidth at 0 too. TextMetrics measures pure text, so it never
+    // defers and never latches.
+    TextMetrics {
+      id: calendarNameMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
+    }
+    TextMetrics {
+      id: tagTextMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: taskItem.task && taskItem.task.categories && taskItem.task.categories.length > 0
+        ? TaskModel.plainDisplay(taskItem.task.categories[0], 40) : ""
+    }
+    // Icons and separator are measured too so the whole metadata-row width
+    // chain is pure: no width binding reads a Text's implicitWidth, which
+    // defers through text-layout polish and can latch at 0 (and drag the
+    // row's width bindings into re-entrancy loops) for delegates built
+    // while the tab container was hidden.
+    TextMetrics {
+      id: calendarIconMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: "\uf073"
+    }
+    TextMetrics {
+      id: tagIconMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: "\uf02b"
+    }
+    TextMetrics {
+      id: separatorMetrics
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      text: "\u00B7"
+    }
+
+    // "Mon d" this year, "Mon d, YYYY" otherwise — shared by the collapsed
+    // date column (backlog tab) and the expanded detail's Created field.
+    readonly property string createdText: {
+      if (!taskItem.task) return ""
+      var d = TaskModel.parseDateTime(taskItem.task.created)
+      if (!d) return ""
+      var month = TaskModel.SHORT_MONTH_NAMES[d.getMonth()]
+      var day = d.getDate()
+      var year = d.getFullYear()
+      if (year === new Date().getFullYear()) return month + " " + day
+      return month + " " + day + ", " + year
+    }
+
     readonly property string dateText: {
       if (!taskItem.task) return ""
       if (taskItem.dateLabel === "completed") return TaskModel.formatCompletedDate(taskItem.task)
-      if (taskItem.dateLabel === "created") {
-        var d = TaskModel.parseDateTime(taskItem.task.created)
-        if (!d) return ""
-        var month = TaskModel.SHORT_MONTH_NAMES[d.getMonth()]
-        var day = d.getDate()
-        var year = d.getFullYear()
-        if (year === new Date().getFullYear()) return month + " " + day
-        return month + " " + day + ", " + year
-      }
+      if (taskItem.dateLabel === "created") return taskItem.createdText
       return TaskModel.formatDueDate(taskItem.task)
     }
 
-    height: taskRow.implicitHeight + Style.space(6)
+    // Expanded detail values. All user-sourced strings are re-sanitized at
+    // display time (categories bypass plainDisplay during normalization);
+    // empty values hide their detail fields.
+    readonly property string detailDescriptionText: taskItem.task ? TaskModel.plainDisplay(taskItem.task.description, 2000) : ""
+    readonly property string detailCategoriesText: taskItem.task && taskItem.task.categories && taskItem.task.categories.length > 0
+      ? TaskModel.plainDisplay(taskItem.task.categories.join(", "), 400) : ""
+    readonly property string detailStatusText: taskItem.task ? statusLabel(taskItem.task.status) : ""
+    readonly property string detailPriorityText: taskItem.task ? priorityLabel(taskItem.task.priority) : ""
+    readonly property string detailDueText: taskItem.task ? TaskModel.formatDueDate(taskItem.task) : ""
+    readonly property string detailCompletedText: taskItem.task ? TaskModel.formatCompletedDate(taskItem.task) : ""
+
+    // Collapsed rows keep the original one-line height (row + 6 = 3 top /
+    // 3 bottom padding). Expanded rows append the detail block: gap above the
+    // divider + detail content + extra bottom padding, so the open card is
+    // roomier at the bottom than the collapsed row. detailColumn.implicitHeight
+    // comes only from wrapped texts laid out with pure parent.width chains —
+    // it never depends on this Rectangle's height, so reading it here cannot
+    // form a binding loop with the width math.
+    height: taskItem.expanded
+      ? taskRow.implicitHeight + Style.space(6) + Style.space(4) + detailColumn.implicitHeight + Style.space(3)
+      : taskRow.implicitHeight + Style.space(6)
     radius: Style.cornerRadius
-    color: taskItemMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent) : "transparent"
+    // The detail block hangs below the collapsed content; while the height
+    // animates it is revealed inside this clip instead of overflowing onto
+    // the next row.
+    clip: true
+    // statusCompleteMouse sits on top of taskItemMouse over the circle, so it
+    // owns the hover grab there; OR it in to keep the row highlighted while
+    // the cursor is on the glyph. Expanded rows hold the fill so the open
+    // card reads as active even without the cursor over it.
+    color: taskItem.expanded || taskItemMouse.containsMouse || statusCompleteMouse.containsMouse
+      ? Style.hoverFillFor(Color.foreground, Color.accent)
+      : "transparent"
+
+    // Curtain-reveal for the detail: animating the height opens/closes over
+    // the clipped content. Pure retarget of the binding above — the inputs
+    // (row implicit height, detail implicit height) never depend on height.
+    Behavior on height {
+      NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+    }
 
     Row {
       id: taskRow
@@ -109,14 +271,22 @@ Column {
       anchors.right: parent.right
       anchors.leftMargin: Style.space(8)
       anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+      // Top-anchored instead of vertically centered: the expanded detail
+      // block anchors below this row. Collapsed appearance is unchanged —
+      // height = row + 6 with this space(3) top margin splits into the same
+      // 3 top / 3 bottom padding the vertical centering produced.
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(3)
       spacing: Style.space(6)
 
       Text {
         id: statusIcon
         anchors.verticalCenter: parent.verticalCenter
-        text: taskItem.task && taskItem.task.status === "COMPLETED" ? "\u2713" : "\u25CB"
-        color: taskItem.task && taskItem.task.status === "COMPLETED" ? Color.muted : Color.foreground
+        text: taskItem.completed ? "\u2713" : "\u25CB"
+        // Completed rows keep the static muted check; pending rows light up
+        // accent while the cursor is on the click target to hint "click me".
+        color: taskItem.completed ? Color.muted
+          : statusCompleteMouse.containsMouse ? Color.accent : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         textFormat: Text.PlainText
@@ -135,6 +305,7 @@ Column {
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           font.bold: taskItem.overdue
+          font.strikeout: taskItem.completed
           textFormat: Text.PlainText
         }
 
@@ -145,8 +316,8 @@ Column {
 
           Text {
             id: calendarIcon
-            visible: calendarNameText.visible
-            width: visible ? implicitWidth : 0
+            visible: taskItem.hasCalendarName
+            width: visible ? calendarIconMetrics.width : 0
             text: "\uf073"
             color: taskItem.taskCalendarColor
             font.family: Style.font.family
@@ -156,16 +327,15 @@ Column {
 
           Text {
             id: calendarNameText
-            visible: taskItem.task && taskItem.task.calendarName
-            // Content-sized first block: take only the width the calendar name needs,
-            // but elide when the tag block leaves less room than that.
-            width: visible ? Math.max(0, Math.min(implicitWidth,
-                parent.width
-                - (calendarIcon.visible ? calendarIcon.width + parent.spacing : 0)
-                - (separatorDot.visible ? separatorDot.width + parent.spacing : 0)
-                - (tagIcon.visible ? tagIcon.width + parent.spacing : 0)
-                - (tagText.visible ? tagText.width + parent.spacing : 0)
-                + parent.spacing)) : 0
+            visible: taskItem.hasCalendarName
+            // Content-sized first block: take only the width the calendar name
+            // needs, but elide when the tag block leaves less room than that.
+            // Measured via TextMetrics for both tabs: implicitWidth latches at
+            // 0 for delegates created while the tab container is hidden.
+            width: {
+              if (!visible) return 0
+              return Math.max(0, Math.min(calendarNameMetrics.width, taskItem.calendarNameAvailableWidth))
+            }
             text: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 80) : ""
             color: taskItem.taskCalendarColor
             elide: Text.ElideRight
@@ -177,7 +347,7 @@ Column {
           Text {
             id: separatorDot
             visible: calendarNameText.visible && tagText.visible
-            width: visible ? implicitWidth : 0
+            width: visible ? separatorMetrics.width : 0
             anchors.verticalCenter: parent.verticalCenter
             text: "\u00B7"
             color: Color.muted
@@ -189,7 +359,7 @@ Column {
           Text {
             id: tagIcon
             visible: tagText.visible
-            width: visible ? implicitWidth : 0
+            width: visible ? tagIconMetrics.width : 0
             text: "\uf02b"
             color: Color.muted
             font.family: Style.font.family
@@ -200,7 +370,9 @@ Column {
           Text {
             id: tagText
             visible: taskItem.task && taskItem.task.categories && taskItem.task.categories.length > 0
-            width: visible ? Math.max(0, Math.min(implicitWidth, parent.width * 0.45 - tagIcon.width - parent.spacing)) : 0
+            // Same TextMetrics reasoning as the calendar name: implicitWidth
+            // latches at 0 for delegates built while the tab was hidden.
+            width: visible ? Math.max(0, Math.min(tagTextMetrics.width, parent.width * 0.45 - tagIcon.width - parent.spacing)) : 0
             text: visible ? TaskModel.plainDisplay(taskItem.task.categories[0], 40) : ""
             color: Color.muted
             elide: Text.ElideRight
@@ -227,11 +399,263 @@ Column {
       }
     }
 
+    // Row toggle: expands/collapses the detail block. Declared BEFORE
+    // detailColumn so the interactive delete footer inside it stacks on top;
+    // the detail's plain texts accept no clicks or hover, so clicks over them
+    // fall through to here and still collapse the row. The status circle's
+    // MouseArea is declared after everything else, so completing from the
+    // glyph still wins there and a circle click never toggles expansion.
     MouseArea {
       id: taskItemMouse
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!taskItem.task) return
+        taskItem.expanded = !taskItem.expanded
+        tasksView.debugLog("action: " + (taskItem.expanded ? "expand" : "collapse") + " task " + taskItem.task.uid)
+      }
+    }
+
+    // Expanded task detail, hanging below the collapsed row and indented to
+    // the title column (past the status glyph — the same statusIcon.width the
+    // collapsed width chain already reads). The column stays laid out at all
+    // times and is revealed by opacity; collapsed rows clip it away, and the
+    // footer button is disabled while collapsed because opacity does not
+    // block hit-testing. All widths are parent.width + wrapMode — no binding
+    // reads an implicitWidth of a Text that could have been built while its
+    // tab container was hidden, so no width chain can latch at 0.
+    Column {
+      id: detailColumn
+      anchors.left: taskRow.left
+      anchors.right: taskRow.right
+      anchors.top: taskRow.bottom
+      anchors.topMargin: Style.space(4)
+      anchors.leftMargin: statusIcon.width + taskRow.spacing
+      spacing: Style.space(4)
+      opacity: taskItem.expanded ? 1 : 0
+
+      Behavior on opacity {
+        NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Util.alpha(Color.foreground, 0.15)
+      }
+
+      TaskDetailField {
+        width: parent.width
+        label: "Description"
+        value: taskItem.detailDescriptionText
+        prominent: true
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Status"
+          value: taskItem.detailStatusText
+        }
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Priority"
+          value: taskItem.detailPriorityText
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Calendar"
+          value: taskItem.task ? TaskModel.plainDisplay(taskItem.task.calendarName, 120) : ""
+          valueColor: taskItem.taskCalendarColor
+        }
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Due"
+          value: taskItem.detailDueText
+        }
+      }
+
+      TaskDetailField {
+        width: parent.width
+        label: "Categories"
+        value: taskItem.detailCategoriesText
+      }
+
+      Row {
+        // Hide the whole row when neither timestamp exists so the detail
+        // column skips it (and its spacing) instead of leaving an empty gap.
+        visible: taskItem.createdText !== "" || taskItem.detailCompletedText !== ""
+        width: parent.width
+        spacing: Style.space(6)
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Created"
+          value: taskItem.createdText
+        }
+
+        TaskDetailField {
+          width: (parent.width - parent.spacing) / 2
+          label: "Completed"
+          value: taskItem.detailCompletedText
+        }
+      }
+
+      // Footer actions. The completion toggle (left, accent) is reversible —
+      // single click, same one-click contract as the status circle, plus the
+      // only way back for completed rows whose circle is disabled. The
+      // destructive delete (right, urgent) keeps its two-step confirm. Each
+      // button anchors to its outer edge, so a label swap never shifts the
+      // click target away from the cursor. Both are disabled while the row
+      // is collapsed: the detail is revealed by opacity, and opacity does
+      // not block hit-testing, so hidden controls must never take input.
+      Item {
+        width: parent.width
+        height: Math.max(completionButton.height, deleteTaskButton.height) + Style.space(2)
+
+        // Label/icon are driven by the case-insensitive completed check, not
+        // the tab, so the same affordance generalizes across Pending and Done.
+        Button {
+          id: completionButton
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: taskItem.completed ? "Not Completed" : "Completed"
+          iconText: taskItem.completed ? "\uf0e2" : "\uf00c"
+          tooltipText: taskItem.completed ? "Mark as not completed" : "Mark as completed"
+          foreground: Color.accent
+          bordered: true
+          enabled: taskItem.expanded && tasksView.taskService
+          onClicked: {
+            if (!taskItem.task) return
+            if (taskItem.completed) {
+              tasksView.debugLog("action: reopen task " + taskItem.task.uid)
+              tasksView.taskService.updateTask(taskItem.task, "NEEDS-ACTION", 0)
+              return
+            }
+            tasksView.debugLog("action: complete task " + taskItem.task.uid)
+            tasksView.taskService.completeTask(taskItem.task)
+          }
+        }
+
+        // Destructive delete: the first click arms (the label swaps to an
+        // explicit confirm), a second click fires the delete. Arming expires
+        // via deleteArmTimer, and collapse or a model rebuild disarms. Kept
+        // compact and right-aligned — like the config tab's Remove action — so
+        // the irreversible target stays small and out of the reading flow.
+        Button {
+          id: deleteTaskButton
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: taskItem.deleteArmed ? "Confirm delete?" : "Delete"
+          iconText: "\uf1f8"
+          tooltipText: taskItem.deleteArmed ? "Click again to delete this task" : "Delete this task"
+          foreground: Color.urgent
+          bordered: true
+          // Mirrors the Remove-calendar guard: one in-flight delete at a time
+          // service-wide. The expanded gate also keeps the opacity-hidden
+          // detail from catching clicks aimed at the next row while this row
+          // is collapsed (opacity does not block hit-testing).
+          enabled: taskItem.expanded && tasksView.taskService && !tasksView.taskService.pendingDeleteUid
+          onClicked: {
+            if (!taskItem.task) return
+            if (!taskItem.deleteArmed) {
+              taskItem.deleteArmed = true
+              deleteArmTimer.restart()
+              tasksView.debugLog("action: arm delete task " + taskItem.task.uid)
+              return
+            }
+            taskItem.deleteArmed = false
+            deleteArmTimer.stop()
+            tasksView.debugLog("action: delete task " + taskItem.task.uid)
+            tasksView.taskService.deleteTask(taskItem.task)
+          }
+        }
+      }
+    }
+
+    // Circle click target: completes a pending task. The glyph itself is the
+    // first child of taskRow (x = 0 within the row), so anchoring the target
+    // to taskRow's left edge pins it over the glyph. Fixed 18x18 size gives a
+    // comfortable hit target without changing the row height or the width
+    // math that reads statusIcon.width. Declared after taskItemMouse so it is
+    // on top and receives clicks/hover over the circle.
+    MouseArea {
+      id: statusCompleteMouse
+      anchors.left: taskRow.left
+      anchors.verticalCenter: taskRow.verticalCenter
+      width: Style.space(18)
+      height: Style.space(18)
+      hoverEnabled: true
+      enabled: taskItem.task && !taskItem.completed
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!tasksView.taskService || !taskItem.task) return
+        tasksView.debugLog("action: complete task " + taskItem.task.uid)
+        tasksView.taskService.completeTask(taskItem.task)
+      }
+    }
+
+    // Collapse always disarms the delete confirm (and stops its timer); a
+    // model rebuild replaces the delegate and drops the state for free.
+    onExpandedChanged: {
+      if (taskItem.expanded) return
+      taskItem.deleteArmed = false
+      deleteArmTimer.stop()
+    }
+
+    Timer {
+      id: deleteArmTimer
+      interval: 4000
+      onTriggered: taskItem.deleteArmed = false
+    }
+  }
+
+  // One label/value pair inside the expanded task detail: small muted
+  // caption label above the value — the same pattern AddFormField uses. The
+  // field hides itself when its value is empty, and every width is
+  // parent.width + wrapMode so nothing here can feed an implicitWidth latch
+  // for delegates built while their tab container was hidden.
+  component TaskDetailField: Column {
+    id: taskDetailField
+    property string label: ""
+    property string value: ""
+    property bool prominent: false
+    property color valueColor: Color.foreground
+
+    visible: taskDetailField.value !== ""
+    width: parent.width
+    spacing: Style.space(1)
+
+    Text {
+      width: parent.width
+      text: taskDetailField.label
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      textFormat: Text.PlainText
+    }
+
+    Text {
+      width: parent.width
+      text: taskDetailField.value
+      color: taskDetailField.valueColor
+      wrapMode: Text.Wrap
+      font.family: Style.font.family
+      font.pixelSize: taskDetailField.prominent ? Style.font.bodySmall : Style.font.caption
+      textFormat: Text.PlainText
     }
   }
 
@@ -290,7 +714,248 @@ Column {
       text: calendarService && calendarService.pendingRemoveId === settingsCalendarRow.calendarId ? "Removing" : "Remove"
       bordered: true
       onClicked: {
+        debugLog("action: remove calendar " + settingsCalendarRow.calendarId)
         if (calendarService) calendarService.removeCalendar(settingsCalendarRow.calendarId)
+      }
+    }
+  }
+
+  // Labeled form row for the add-task view: small muted caption above, then
+  // whatever control(s) the caller injects (field, helper text, picker...).
+  component AddFormField: Column {
+    id: addFormField
+    default property alias contentData: addFormFieldContent.data
+    property string label: ""
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(4)
+
+    Text {
+      width: parent.width
+      text: addFormField.label
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      textFormat: Text.PlainText
+    }
+
+    Column {
+      id: addFormFieldContent
+      width: parent.width
+      spacing: Style.space(4)
+    }
+  }
+
+  // One day cell of the due-date mini calendar. `cell` is fed from the
+  // Repeater's modelData at the use site; only instantiated under the
+  // AddDuePicker, so the `dueGrid` scope reference is always resolvable.
+  component AddDueCell: Rectangle {
+    id: dueCell
+    property var cell: null
+
+    readonly property bool picked: dueCell.cell ? dueCell.cell.selected : false
+    readonly property bool dimmed: dueCell.cell ? !dueCell.cell.inMonth : true
+
+    width: dueGrid.cellSize
+    height: dueGrid.cellSize
+    radius: Style.cornerRadius
+    color: cellMouse.pressed ? Style.pressedFillFor(Color.foreground, Color.accent)
+      : picked ? Style.selectedFillFor(Color.foreground, Color.accent)
+      : cellMouse.containsMouse ? Style.hoverFillFor(Color.foreground, Color.accent)
+      : "transparent"
+    border.width: dueCell.cell && dueCell.cell.today && !picked ? 1 : 0
+    border.color: Color.accent
+
+    Text {
+      anchors.centerIn: parent
+      text: dueCell.cell ? dueCell.cell.day : ""
+      color: dueCell.picked ? Style.selectedStateColor(Color.foreground, Color.accent)
+        : dueCell.dimmed ? Util.alpha(Color.foreground, 0.35)
+        : Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      font.bold: dueCell.picked || (dueCell.cell && dueCell.cell.today)
+      textFormat: Text.PlainText
+    }
+
+    MouseArea {
+      id: cellMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: dueCell.cell ? dueCell.cell.inMonth : false
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!dueCell.cell) return
+        dueGrid.pickCell(dueCell.cell)
+      }
+    }
+  }
+
+  // Compact month grid for the due-date field: Monday-first, today ringed,
+  // selected day filled, prev/next month plus a Today jump. Stays narrow
+  // enough for the panel card on small screens.
+  component AddDuePicker: Column {
+    id: dueGrid
+    property int viewYear: 0
+    property int viewMonth: 0
+    property bool popupOpen: visible
+
+    readonly property real cellGap: Style.space(2)
+    readonly property real cellSize: Math.max(Style.space(12), Math.floor((width - cellGap * 6) / 7))
+    readonly property int leadingDays: viewYear > 0 ? (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7 : 0
+    readonly property int daysInMonth: viewYear > 0 ? new Date(viewYear, viewMonth + 1, 0).getDate() : 0
+    readonly property int rowCount: Math.ceil((leadingDays + daysInMonth) / 7)
+    readonly property string monthLabel: viewYear > 0 ? TaskModel.MONTH_NAMES[viewMonth] + " " + viewYear : ""
+    readonly property var weekdayLabels: ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    readonly property var cells: {
+      var out = []
+      if (viewYear <= 0) return out
+      var leading = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
+      var cursor = new Date(viewYear, viewMonth, 1 - leading)
+      var today = addTaskView.dueKeyForDate(tasksView.now)
+      for (var i = 0; i < rowCount * 7; i++) {
+        var cellYear = cursor.getFullYear()
+        var cellMonth = cursor.getMonth()
+        var cellDay = cursor.getDate()
+        var key = addTaskView.dueKeyFor(cellYear, cellMonth, cellDay)
+        out.push({
+          key: key,
+          day: cellDay,
+          inMonth: cellMonth === viewMonth && cellYear === viewYear,
+          today: key === today,
+          selected: key === addTaskView.dueKey
+        })
+        cursor.setDate(cursor.getDate() + 1)
+      }
+      return out
+    }
+    readonly property var cellRows: {
+      var rows = []
+      var all = cells
+      for (var r = 0; r < rowCount; r++) rows.push(all.slice(r * 7, r * 7 + 7))
+      return rows
+    }
+
+    function stepMonth(delta) {
+      var target = new Date(viewYear, viewMonth + delta, 1)
+      viewYear = target.getFullYear()
+      viewMonth = target.getMonth()
+    }
+
+    function showToday() {
+      viewYear = tasksView.now.getFullYear()
+      viewMonth = tasksView.now.getMonth()
+    }
+
+    // Handles a day-cell click on behalf of the cell (the cell's inline
+    // component scope cannot see the add view's ids directly).
+    function pickCell(cell) {
+      if (!cell) return
+      debugLog("action: pick due date " + cell.key)
+      addTaskView.dueKey = cell.key
+      addTaskView.closeDuePicker()
+    }
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(2)
+    focus: visible
+
+    onVisibleChanged: {
+      if (!visible) return
+      var anchor = addTaskView.parseDueKey(addTaskView.dueKey)
+      if (!anchor) anchor = new Date(tasksView.now)
+      viewYear = anchor.getFullYear()
+      viewMonth = anchor.getMonth()
+      forceActiveFocus()
+    }
+
+    Keys.onEscapePressed: function(event) {
+      addTaskView.closeDuePicker()
+      event.accepted = true
+    }
+
+    Item {
+      width: parent.width
+      height: Style.spacing.controlHeight
+
+      Row {
+        anchors.centerIn: parent
+        spacing: Style.space(2)
+
+        Button {
+          text: "\uf104"
+          tooltipText: "Previous month"
+          fontSize: Style.font.caption
+          onClicked: dueGrid.stepMonth(-1)
+        }
+
+        Text {
+          width: Style.space(110)
+          anchors.verticalCenter: parent.verticalCenter
+          horizontalAlignment: Text.AlignHCenter
+          text: dueGrid.monthLabel
+          color: Color.foreground
+          elide: Text.ElideRight
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+
+        Button {
+          text: "\uf105"
+          tooltipText: "Next month"
+          fontSize: Style.font.caption
+          onClicked: dueGrid.stepMonth(1)
+        }
+      }
+
+      Button {
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Today"
+        tooltipText: "Jump to current month"
+        fontSize: Style.font.caption
+        onClicked: dueGrid.showToday()
+      }
+    }
+
+    Row {
+      spacing: dueGrid.cellGap
+
+      Repeater {
+        model: dueGrid.weekdayLabels
+
+        Text {
+          required property var modelData
+          width: dueGrid.cellSize
+          horizontalAlignment: Text.AlignHCenter
+          text: modelData
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+      }
+    }
+
+    Repeater {
+      model: dueGrid.cellRows
+
+      Row {
+        required property var modelData
+        spacing: dueGrid.cellGap
+
+        Repeater {
+          model: modelData
+
+          AddDueCell {
+            required property var modelData
+            cell: modelData
+          }
+        }
       }
     }
   }
@@ -411,7 +1076,10 @@ Column {
       visible: !caldavForm.visible
       text: "Connect Server"
       bordered: true
-      onClicked: caldavForm.visible = true
+      onClicked: {
+        debugLog("action: open caldav form")
+        caldavForm.visible = true
+      }
     }
 
     Column {
@@ -463,6 +1131,7 @@ Column {
           bordered: true
           enabled: calendarService && calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
+            debugLog("action: caldav connect " + sanitizeUrl(caldavUrlField.text))
             if (calendarService) {
               calendarService.setupCaldav("", caldavUrlField.text, caldavUsernameField.text, caldavPasswordField.text)
             }
@@ -473,6 +1142,7 @@ Column {
           text: "Cancel"
           enabled: !calendarService || calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
+            debugLog("action: caldav form cancel")
             caldavUrlField.text = ""
             caldavUsernameField.text = ""
             caldavPasswordField.text = ""
@@ -511,6 +1181,533 @@ Column {
         textFormat: Text.PlainText
       }
     }
+
+    Column {
+      width: parent.width
+      spacing: Style.space(4)
+
+      Text {
+        width: parent.width
+        text: "Misc"
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Color.accent
+      }
+    }
+
+    Toggle {
+      width: parent.width
+      label: "Debug mode"
+      description: "Log plugin actions to the shell console"
+      checked: calendarService ? calendarService.debugMode : false
+      onClicked: {
+        var next = !(calendarService && calendarService.debugMode)
+        if (calendarService) calendarService.debugMode = next
+        if (panel) panel.persistSettings({ debug: next })
+        debugLog("action: toggle debug mode -> " + next)
+      }
+    }
+
+    Button {
+      id: clearLogsButton
+      visible: calendarService ? calendarService.debugMode : false
+      text: "Clear logs"
+      bordered: true
+      onClicked: if (calendarService) calendarService.clearDebugLog()
+    }
+
+    Rectangle {
+      width: parent.width
+      height: 220
+      radius: Style.cornerRadius
+      color: Color.popups.background
+      border.color: Color.popups.border
+      border.width: 1
+      visible: calendarService ? calendarService.debugMode : false
+
+      ScrollView {
+        id: debugLogScroll
+        anchors.fill: parent
+        anchors.margins: Style.space(2)
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+        TextArea {
+          id: debugLogArea
+          readOnly: true
+          wrapMode: TextArea.Wrap
+          textFormat: Text.PlainText
+          persistentSelection: false
+          color: Color.popups.text
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: calendarService ? calendarService.debugLogText : ""
+          background: null
+          onTextChanged: cursorPosition = text.length
+        }
+      }
+    }
+  }
+
+  // Add tab content
+  Column {
+    id: addTaskView
+    visible: tasksView.activeTab === "add"
+    width: Math.min(parent.width, Style.space(420))
+    anchors.horizontalCenter: parent.horizontalCenter
+    spacing: Style.space(12)
+
+    // --- Add-task state ---------------------------------------------------
+
+    property string calendarId: ""
+    property string dueKey: ""
+    property bool duePickerOpen: false
+    property bool submitBusy: false
+    property string createError: ""
+
+    readonly property var writableCalendars: {
+      var all = calendarService && calendarService.calendars ? calendarService.calendars : []
+      var out = []
+      for (var i = 0; i < all.length; i++) {
+        var calendar = all[i]
+        if (calendar && calendar.id && !calendar.readonly) out.push(calendar)
+      }
+      return out
+    }
+
+    readonly property var calendarOptions: {
+      var out = []
+      for (var i = 0; i < writableCalendars.length; i++) {
+        var calendar = writableCalendars[i]
+        out.push({ value: String(calendar.id), label: TaskModel.calendarChoiceLabel(calendar, {}) })
+      }
+      return out
+    }
+
+    readonly property bool canSubmit: !submitBusy
+      && calendarId !== ""
+      && calendarService !== null
+      && trimText(addSummaryField.text).length > 0
+
+    // --- Add-task behavior ------------------------------------------------
+
+    function trimText(value) {
+      return String(value == null ? "" : value).replace(/^\s+|\s+$/g, "")
+    }
+
+    function pad2(value) {
+      var s = String(value)
+      return s.length < 2 ? "0" + s : s
+    }
+
+    // All-day due strings stay local to this view: build and format only,
+    // never resolve calendar math beyond what the mini grid needs.
+    function dueKeyFor(year, month, day) {
+      if (!isFinite(year) || !isFinite(month) || !isFinite(day)) return ""
+      return [year, pad2(month + 1), pad2(day)].join("-")
+    }
+
+    function dueKeyForDate(date) {
+      if (!date || isNaN(date.getTime())) return ""
+      return dueKeyFor(date.getFullYear(), date.getMonth(), date.getDate())
+    }
+
+    function parseDueKey(key) {
+      var parts = String(key || "").split("-")
+      if (parts.length !== 3) return null
+      var year = parseInt(parts[0], 10)
+      var month = parseInt(parts[1], 10)
+      var day = parseInt(parts[2], 10)
+      if (!isFinite(year) || !isFinite(month) || !isFinite(day)) return null
+      if (month < 1 || month > 12 || day < 1 || day > 31) return null
+      return new Date(year, month - 1, day)
+    }
+
+    // "Mon d" this year, "Mon d, YYYY" otherwise — TaskModel.formatDueDate style.
+    function formatDueChoice(key) {
+      var date = parseDueKey(key)
+      if (!date) return ""
+      var month = TaskModel.SHORT_MONTH_NAMES[date.getMonth()]
+      var day = date.getDate()
+      var year = date.getFullYear()
+      if (year === tasksView.now.getFullYear()) return month + " " + day
+      return month + " " + day + ", " + year
+    }
+
+    function hasCalendar(id) {
+      var all = writableCalendars
+      for (var i = 0; i < all.length; i++) {
+        if (String(all[i].id) === String(id)) return true
+      }
+      return false
+    }
+
+    // Prefer the service default when it is writable, else the first
+    // writable calendar, else "" (submit stays disabled with a hint).
+    function defaultWritableCalendarId() {
+      var preferred = calendarService && typeof calendarService.defaultCalendarId === "function"
+        ? String(calendarService.defaultCalendarId() || "")
+        : ""
+      if (preferred !== "" && hasCalendar(preferred)) return preferred
+      var all = writableCalendars
+      return all.length > 0 ? String(all[0].id) : ""
+    }
+
+    function resetCalendar() {
+      calendarId = defaultWritableCalendarId()
+      // Dropdown reassigns its own value on selection, which breaks an
+      // outer binding — mirror every external change into it instead.
+      if (addCalendarDropdown) addCalendarDropdown.value = calendarId
+    }
+
+    function toggleDuePicker() {
+      duePickerOpen = !duePickerOpen
+      if (!duePickerOpen) restorePanelFocus()
+    }
+
+    function closeDuePicker() {
+      if (!duePickerOpen) return
+      duePickerOpen = false
+      restorePanelFocus()
+    }
+
+    function clearDueDate() {
+      debugLog("action: clear due date")
+      dueKey = ""
+    }
+
+    function parsedCategories() {
+      var raw = addCategoryField.text.split(",")
+      var out = []
+      for (var i = 0; i < raw.length; i++) {
+        var tag = trimText(raw[i])
+        if (tag.length > 0) out.push(tag)
+      }
+      return out
+    }
+
+    function clearDraft() {
+      addSummaryField.text = ""
+      addDescriptionField.text = ""
+      addCategoryField.text = ""
+      dueKey = ""
+      duePickerOpen = false
+      createError = ""
+    }
+
+    function trySubmit() {
+      if (!canSubmit) return
+      var title = trimText(addSummaryField.text)
+      var description = String(addDescriptionField.text == null ? "" : addDescriptionField.text)
+      var categories = parsedCategories()
+      createError = ""
+      submitBusy = true
+      addSubmitSafety.restart()
+      debugLog("action: create task calendar=" + calendarId + " due=" + (dueKey !== "" ? dueKey : "(none)") + " title=" + title)
+      // Stay on the form until the service confirms the create: switching
+      // to Pending early threw the draft away whenever the helper rejected
+      // it (bad auth, wrong provider...), leaving only a flash of red.
+      // Priority stays at its service default.
+      if (calendarService) {
+        calendarService.createTask(calendarId, title, dueKey, undefined, description, categories)
+      }
+    }
+
+    function handleCreateSuccess() {
+      if (!submitBusy) return
+      addSubmitSafety.stop()
+      submitBusy = false
+      clearDraft()
+      tasksView.activeTab = "pending"
+    }
+
+    function handleCreateFailure(reason) {
+      if (!submitBusy) return
+      addSubmitSafety.stop()
+      submitBusy = false
+      // Draft (summary, description, due, categories, calendar) is kept so
+      // the user can fix the cause and resubmit without retyping.
+      createError = "Couldn't create the task: " + String(reason || "something went wrong")
+    }
+
+    function handleCreateTimeout() {
+      if (!submitBusy) return
+      submitBusy = false
+      createError = "Create timed out — try again."
+    }
+
+    function cancelAdd() {
+      debugLog("action: add task cancel")
+      clearDraft()
+      resetCalendar()
+      tasksView.activeTab = "pending"
+    }
+
+    function escapeAdd() {
+      debugLog("action: add task escape")
+      duePickerOpen = false
+      tasksView.activeTab = "pending"
+    }
+
+    function beginAdd() {
+      if (calendarId === "" || !hasCalendar(calendarId)) resetCalendar()
+      Qt.callLater(function() { addSummaryField.forceActiveFocus() })
+    }
+
+    function releaseEditing() {
+      duePickerOpen = false
+      addSummaryField.focus = false
+      addDescriptionField.focus = false
+      addCategoryField.focus = false
+      createError = ""
+      restorePanelFocus()
+    }
+
+    // Hand the keyboard back to the panel cursor unless a field still
+    // holds focus (the shared Dropdown and picker close without doing it).
+    function restorePanelFocus() {
+      if (!tasksView.opened) return
+      if (addSummaryField.activeFocus || addDescriptionField.activeFocus || addCategoryField.activeFocus) return
+      if (panel && typeof panel.focusKeyCatcher === "function") panel.focusKeyCatcher()
+    }
+
+    onWritableCalendarsChanged: if (calendarId === "" || !hasCalendar(calendarId)) resetCalendar()
+
+    // In-flight guard rather than a click debounce: submitBusy releases only
+    // when the service reports success or failure. If neither ever arrives
+    // (hung helper), this re-enables the form so it cannot dead-end.
+    Timer {
+      id: addSubmitSafety
+      interval: 15000
+      onTriggered: addTaskView.handleCreateTimeout()
+    }
+
+    // --- Add-task layout --------------------------------------------------
+
+    Column {
+      width: parent.width
+      spacing: Style.space(4)
+
+      Item {
+        width: parent.width
+        height: Math.max(addHeaderTitle.implicitHeight, addHeaderClose.implicitHeight)
+
+        Text {
+          id: addHeaderTitle
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: "New Task"
+          color: Color.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+
+        Button {
+          id: addHeaderClose
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: "\u2715"
+          tooltipText: "Back to tasks"
+          fontSize: Style.font.caption
+          onClicked: {
+            debugLog("action: add task close")
+            tasksView.activeTab = "pending"
+          }
+        }
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Color.accent
+      }
+    }
+
+    AddFormField {
+      label: "Calendar"
+
+      Dropdown {
+        id: addCalendarDropdown
+        width: parent.width
+        showLabel: false
+        options: addTaskView.calendarOptions
+        value: addTaskView.calendarId
+        onChanged: function(v) { addTaskView.calendarId = v }
+        onPopupOpenChanged: if (!popupOpen) addTaskView.restorePanelFocus()
+      }
+
+      Text {
+        visible: addTaskView.calendarOptions.length === 0
+        width: parent.width
+        text: "No writable calendars — add one in Config"
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        textFormat: Text.PlainText
+      }
+    }
+
+    AddFormField {
+      label: "Summary"
+
+      TextField {
+        id: addSummaryField
+        width: parent.width
+        placeholderText: "What needs doing?"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        onAccepted: addTaskView.trySubmit()
+        Keys.onEscapePressed: function(event) {
+          addTaskView.escapeAdd()
+          event.accepted = true
+        }
+      }
+    }
+
+    AddFormField {
+      label: "Description"
+
+      BorderSurface {
+        id: addDescriptionSurface
+        width: parent.width
+        height: Style.space(76)
+        radius: Style.cornerRadius
+
+        readonly property bool _focused: addDescriptionField.activeFocus
+        readonly property bool _hot: addDescriptionField.hovered
+        readonly property var _borderSpec: Border.controlSpec(_focused ? "focus" : (_hot ? "hover-cursor" : "normal"), Color.foreground, Color.accent)
+
+        color: Style.controlFill(_focused, _hot, Color.foreground, Color.accent)
+        borderSpec: _borderSpec
+
+        TextArea {
+          id: addDescriptionField
+          anchors.fill: parent
+          anchors.leftMargin: Style.spacing.controlPaddingX + Border.left(parent._borderSpec)
+          anchors.rightMargin: Style.spacing.controlPaddingX + Border.right(parent._borderSpec)
+          anchors.topMargin: Style.space(6) + Border.top(parent._borderSpec)
+          anchors.bottomMargin: Style.space(6) + Border.bottom(parent._borderSpec)
+          placeholderText: "Optional details"
+          placeholderTextColor: Qt.darker(Color.foreground, 1.6)
+          selectionColor: Style.selectionFillFor(Color.foreground, Color.accent)
+          selectedTextColor: Color.foreground
+          wrapMode: TextArea.Wrap
+          textFormat: Text.PlainText
+          persistentSelection: false
+          clip: true
+          background: null
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          Keys.onEscapePressed: function(event) {
+            addTaskView.escapeAdd()
+            event.accepted = true
+          }
+        }
+      }
+    }
+
+    AddFormField {
+      label: "Due"
+
+      Row {
+        width: parent.width
+        spacing: Style.space(4)
+
+        Button {
+          id: addDueTrigger
+          width: parent.width - (addDueClear.visible ? addDueClear.width + parent.spacing : 0)
+          leftAlign: true
+          bordered: true
+          iconText: "\uf073"
+          text: addTaskView.dueKey !== "" ? addTaskView.formatDueChoice(addTaskView.dueKey) : "No due date"
+          foreground: addTaskView.dueKey !== "" ? Color.accent : Color.foreground
+          tooltipText: addTaskView.duePickerOpen ? "Hide date picker" : "Pick a due date"
+          onClicked: addTaskView.toggleDuePicker()
+        }
+
+        Button {
+          id: addDueClear
+          visible: addTaskView.dueKey !== ""
+          text: "\u2715"
+          tooltipText: "Remove due date"
+          fontSize: Style.font.caption
+          onClicked: addTaskView.clearDueDate()
+        }
+      }
+
+      AddDuePicker {
+        id: addDueGrid
+        visible: addTaskView.duePickerOpen
+      }
+    }
+
+    AddFormField {
+      label: "Category"
+
+      TextField {
+        id: addCategoryField
+        width: parent.width
+        placeholderText: "e.g. errands, home"
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        onAccepted: addTaskView.trySubmit()
+        Keys.onEscapePressed: function(event) {
+          addTaskView.escapeAdd()
+          event.accepted = true
+        }
+      }
+
+      Text {
+        width: parent.width
+        text: "Comma-separated"
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        textFormat: Text.PlainText
+      }
+    }
+
+    Row {
+      width: parent.width
+      spacing: Style.space(6)
+
+      Button {
+        text: "Create Task"
+        tooltipText: "Create task"
+        foreground: Color.accent
+        bordered: true
+        enabled: addTaskView.canSubmit
+        opacity: enabled ? 1 : 0.4
+        onClicked: addTaskView.trySubmit()
+      }
+
+      Button {
+        text: "Cancel"
+        onClicked: addTaskView.cancelAdd()
+      }
+    }
+
+    // Create failure feedback. Sits under the action row so the eye lands
+    // on it right after a rejected submit; fields stay editable above.
+    Text {
+      visible: addTaskView.createError !== ""
+      width: parent.width
+      text: addTaskView.createError
+      color: Color.urgent
+      wrapMode: Text.WordWrap
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
   }
 
   // --- Service signal connections ---
@@ -523,8 +1720,17 @@ Column {
       tasksView.now = new Date()
     }
 
+    function onDebugModeChanged() {
+      TaskModel.setDebugEnabled(taskService.debugMode)
+    }
+
     function onTaskCreated(task) {
       tasksView.now = new Date()
+      addTaskView.handleCreateSuccess()
+    }
+
+    function onTaskCreateFailed(reason) {
+      addTaskView.handleCreateFailure(reason)
     }
 
     function onTaskUpdated(task) {
@@ -547,10 +1753,23 @@ Column {
 
   // --- Load tasks on creation if already visible ---
 
+  onCalendarServiceChanged: syncTaskModelDebug()
+
   Component.onCompleted: {
+    syncTaskModelDebug()
     if (visible && taskService) {
       tasksView.now = new Date()
       taskService.listTasks()
+    }
+  }
+
+  // --- Tab transitions ---
+
+  onActiveTabChanged: {
+    if (activeTab === "add") {
+      addTaskView.beginAdd()
+    } else {
+      addTaskView.releaseEditing()
     }
   }
 

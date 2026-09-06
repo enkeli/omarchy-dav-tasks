@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -177,6 +179,188 @@ def run() -> int:
             window_end = datetime.now(UTC) + timedelta(days=400)
             parsed, complete = mod.events_from_ics(work_events[0].get("title") and changed[0]["ics"], calendar, None, modules, window_start, window_end)
             check("GI parse of wrapped VEVENT", complete and parsed and parsed[0]["title"] == "Seed Alpha" and parsed[0]["uid"] == "uid-alpha@test", str(parsed[:1]))
+
+        try:
+            modules = mod.load_eds_modules()
+        except Exception:
+            modules = None
+        if modules is None:
+            print("ok - caldav task writes skipped (no GI bindings)")
+        else:
+            task_calendar = {"id": "work", "name": "Work", "color": "#000", "provider": "caldav", "host": "127.0.0.1", "source": "test"}
+            original_session = mod.caldav_task_session
+            mod.caldav_task_session = lambda _calendar_id: (modules, None, None, task_calendar, work["href"], USER, PASSWORD)
+            try:
+                due = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+                created = mod.create_task_caldav("work", "Harness Task", due, "Harness description", ["Work", "Home"], 5, "needs-action", 0, None)
+                created_task = created.get("task") or {}
+                check(
+                    "caldav create-task returns a synced task payload",
+                    created.get("ok") is True
+                    and created.get("provider") == "caldav"
+                    and str(created.get("uid") or "").startswith("omarchy-calendar-")
+                    and created_task.get("title") == "Harness Task"
+                    and created_task.get("description") == "Harness description"
+                    and created_task.get("categories") == ["Work", "Home"]
+                    and created_task.get("due") == "2026-09-01T12:00:00Z"
+                    and created_task.get("priority") == 5
+                    and created_task.get("status") == "needs-action"
+                    and created_task.get("calendarId") == "work",
+                    str(created),
+                )
+                uid = str(created.get("uid") or "")
+                task_resource = mod.caldav_task_resource(work["href"], uid)
+                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                stored = raw.decode("utf-8", "replace")
+                check(
+                    "created VTODO is stored with task fields",
+                    status_code == 200
+                    and "BEGIN:VTODO" in stored
+                    and f"UID:{uid}" in stored
+                    and "CATEGORIES:Work" in stored
+                    and "CATEGORIES:Home" in stored
+                    and "PRIORITY:5" in stored
+                    and "DUE:20260901T120000Z" in stored,
+                    str((status_code, stored)),
+                )
+                task_token, task_changed, _removed, _truncated = report(mod, work["href"], token4)
+                check(
+                    "created task appears in REPORT",
+                    any(item["uid"] == uid and "BEGIN:VTODO" in (item.get("ics") or "") for item in task_changed),
+                    str(task_changed),
+                )
+                updated = mod.update_task_caldav("work", uid, "", None, "", 0, "completed", 100, None)
+                updated_task = updated.get("task") or {}
+                check(
+                    "caldav update-task completes the task",
+                    updated.get("ok") is True
+                    and updated_task.get("status") == "completed"
+                    and updated_task.get("percentComplete") == 100
+                    and updated_task.get("completed") != ""
+                    and updated_task.get("title") == "Harness Task"
+                    and updated_task.get("description") == "Harness description"
+                    and updated_task.get("categories") == ["Work", "Home"],
+                    str(updated),
+                )
+                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                updated_ics = raw.decode("utf-8", "replace")
+                check(
+                    "updated VTODO keeps carried-over properties",
+                    "STATUS:COMPLETED" in updated_ics
+                    and "PERCENT-COMPLETE:100" in updated_ics
+                    and "COMPLETED:" in updated_ics
+                    and "SUMMARY:Harness Task" in updated_ics
+                    and "CATEGORIES:Work" in updated_ics
+                    and "CATEGORIES:Home" in updated_ics,
+                    str(updated_ics),
+                )
+                reopened = mod.update_task_caldav("work", uid, "", None, "", 0, "needs-action", 0, None)
+                reopened_task = reopened.get("task") or {}
+                check(
+                    "caldav update-task reopens the task",
+                    reopened.get("ok") is True
+                    and reopened_task.get("status") == "needs-action"
+                    and reopened_task.get("percentComplete") == 0
+                    and reopened_task.get("completed") == "",
+                    str(reopened),
+                )
+                seeded_uid = "uid-invalid-dates@test"
+                # Filename mirrors the UID: Nextcloud names task resources by
+                # UID, which is what update_task_caldav's URL build assumes.
+                control(base, {"op": "put-task", "calendar": "work", "filename": seeded_uid, "uid": seeded_uid, "ics": (
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                    f"UID:{seeded_uid}\r\nSUMMARY:Invalid Dates\r\n"
+                    "DTSTART:20260905T000000Z\r\nDUE:20260905T000000Z\r\n"
+                    "DTSTAMP:20260905T000000Z\r\nSTATUS:NEEDS-ACTION\r\n"
+                    "END:VTODO\r\nEND:VCALENDAR\r\n"
+                )})
+                completed_invalid = mod.update_task_caldav("work", seeded_uid, "", None, "", 0, "completed", 100, None)
+                check(
+                    "caldav update repairs DUE<=DTSTART tasks",
+                    completed_invalid.get("ok") is True and (completed_invalid.get("task") or {}).get("status") == "completed",
+                    str(completed_invalid),
+                )
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], seeded_uid), USER, PASSWORD, b"", {})
+                repaired = raw.decode("utf-8", "replace")
+                check(
+                    "repaired VTODO drops DTSTART and keeps DUE",
+                    status_code == 200 and "DTSTART" not in repaired and "DUE:20260905T000000Z" in repaired and "STATUS:COMPLETED" in repaired,
+                    repaired,
+                )
+                mod.delete_task_caldav("work", seeded_uid)
+
+                guard_due = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)
+                guarded = mod.create_task_caldav("work", "Guard Task", guard_due, "", [], 0, "needs-action", 0, guard_due)
+                guard_uid = str(guarded.get("uid") or "")
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], guard_uid), USER, PASSWORD, b"", {})
+                guard_ics = raw.decode("utf-8", "replace")
+                check(
+                    "created VTODO drops DTSTART when DUE<=DTSTART",
+                    bool(guard_uid) and "DTSTART" not in guard_ics and "DUE:20260905T000000Z" in guard_ics,
+                    guard_ics,
+                )
+                mod.delete_task_caldav("work", guard_uid)
+
+                # Regression: the CLI update path used to leak the --from
+                # window default into task writes as an implicit DTSTART
+                # (rewriting stored dates and crashing the DUE/DTSTART
+                # repair with mixed naive/aware datetimes).
+                main_uid = "uid-mainflow@test"
+                control(base, {"op": "put-task", "calendar": "work", "filename": main_uid, "uid": main_uid, "ics": (
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                    f"UID:{main_uid}\r\nSUMMARY:Main Flow\r\n"
+                    "DTSTART:20260801T000000Z\r\nDUE:20260815T000000Z\r\n"
+                    "DTSTAMP:20260801T000000Z\r\nSTATUS:NEEDS-ACTION\r\n"
+                    "END:VTODO\r\nEND:VCALENDAR\r\n"
+                )})
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured):
+                    mod.main(["update-task", "--provider", "caldav", "--calendar-id", "work", "--uid", main_uid, "--status", "needs-action", "--percent-complete", "50"])
+                main_payload = json.loads(captured.getvalue())
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], main_uid), USER, PASSWORD, b"", {})
+                main_ics = raw.decode("utf-8", "replace")
+                check(
+                    "CLI update without --from keeps stored dates",
+                    main_payload.get("ok") is True
+                    and "DTSTART:20260801T000000Z" in main_ics
+                    and "DUE:20260815T000000Z" in main_ics
+                    and "PERCENT-COMPLETE:50" in main_ics,
+                    str((main_payload, main_ics)),
+                )
+                mod.delete_task_caldav("work", main_uid)
+
+                control(base, {"op": "put-fault", "on": True, "status": 415})
+                faulted = ""
+                try:
+                    mod.update_task_caldav("work", uid, "", None, "", 0, "completed", 100, None)
+                except ValueError as error:
+                    faulted = str(error)
+                finally:
+                    control(base, {"op": "put-fault", "on": False})
+                check(
+                    "caldav update failure carries the server detail",
+                    "status 415" in faulted and "Unsupported Media Type" in faulted,
+                    faulted,
+                )
+                logged = ""
+                log_path = Path(cache_dir) / "sync.log"
+                if log_path.is_file():
+                    for line in log_path.read_text(encoding="utf-8").splitlines():
+                        try:
+                            entry = json.loads(line)
+                        except Exception:
+                            continue
+                        if entry.get("message") == "task-update-failed":
+                            logged = json.dumps(entry)
+                check("failed task writes land in sync.log", "task-update-failed" in logged and "415" in logged and uid in logged, logged)
+                deleted = mod.delete_task_caldav("work", uid)
+                check("caldav delete-task removes the task", deleted.get("ok") is True, str(deleted))
+                status_code, _raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                check("deleted task resource is gone", status_code == 404, str(status_code))
+                _del_token, _changed, del_removed, _trunc = report(mod, work["href"], task_token)
+                check("deleted task appears as a REPORT 404", uid in del_removed, str(del_removed))
+            finally:
+                mod.caldav_task_session = original_session
 
         probe_status, probe_body = mod.caldav_propfind(work["href"], USER, PASSWORD)
         supported, probed_token, ctag = mod.parse_sync_probe(probe_body) if probe_status in (200, 207) else (False, "", "")

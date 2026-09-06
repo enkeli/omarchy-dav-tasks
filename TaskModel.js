@@ -1,3 +1,11 @@
+var debugEnabled = false
+
+// Plain module-level vars work fine here: the file is imported as a shared JS
+// library (import "TaskModel.js" as TaskModel) by the QML files that need it.
+function setDebugEnabled(value) {
+  debugEnabled = value === true
+}
+
 function parseDateTime(value) {
   var timestamp = Date.parse(String(value || ''))
   return isNaN(timestamp) ? null : new Date(timestamp)
@@ -36,11 +44,11 @@ function normalizedTask(raw) {
 
 function normalizeTasks(tasks) {
   if (!Array.isArray(tasks)) {
-    console.log("[TaskModel] normalizeTasks: input is not array:", typeof tasks)
+    if (debugEnabled) console.log("[TaskModel] normalizeTasks: input is not array:", typeof tasks)
     return []
   }
   var result = tasks.map(normalizedTask).filter(function(task) { return task.id })
-  console.log("[TaskModel] normalizeTasks: input:", tasks.length, "output:", result.length)
+  if (debugEnabled) console.log("[TaskModel] normalizeTasks: input:", tasks.length, "output:", result.length)
   return result
 }
 
@@ -69,7 +77,7 @@ function upcomingTasks(tasks, maxCount) {
   var list = normalizeTasks(tasks)
   var pending = list.filter(function(task) { return isPending(task) })
   var withDue = pending.filter(function(task) { return !!task.due })
-  console.log("[TaskModel] upcomingTasks: total:", list.length, "pending:", pending.length, "withDue:", withDue.length)
+  if (debugEnabled) console.log("[TaskModel] upcomingTasks: total:", list.length, "pending:", pending.length, "withDue:", withDue.length)
   return withDue
     .sort(function(a, b) {
       var dueA = String(a.due || '')
@@ -88,7 +96,7 @@ function backlogTasks(tasks) {
       var createdB = String(b.created || '')
       return createdB.localeCompare(createdA)
     })
-  console.log("[TaskModel] backlogTasks: total:", list.length, "result:", result.length)
+  if (debugEnabled) console.log("[TaskModel] backlogTasks: total:", list.length, "result:", result.length)
   return result
 }
 
@@ -103,18 +111,21 @@ function doneTasks(tasks, maxCount) {
       return completedB.localeCompare(completedA)
     })
     .slice(0, limit)
-  console.log("[TaskModel] doneTasks: total:", list.length, "result:", result.length)
+  if (debugEnabled) console.log("[TaskModel] doneTasks: total:", list.length, "result:", result.length)
   return result
 }
 
 function parseHelperResponse(text) {
   try {
     var parsed = JSON.parse(String(text || '{}'))
+    // Write ops (create/update) return a singular `task`; list ops return a
+    // `tasks` array — normalize both so finish handlers see one shape.
+    var rawTasks = Array.isArray(parsed.tasks) ? parsed.tasks : (parsed.task ? [parsed.task] : [])
     return {
       ok: parsed.ok === true,
       provider: String(parsed.provider || ''),
       calendars: Array.isArray(parsed.calendars) ? parsed.calendars : [],
-      tasks: normalizeTasks(parsed.tasks),
+      tasks: normalizeTasks(rawTasks),
       error: parsed.error || null
     }
   } catch (error) {

@@ -12,6 +12,11 @@ Item {
   property var cachedCalendars: []
   readonly property int maxHelperBytes: 8 * 1024 * 1024
   readonly property int maxHelperErrorBytes: 64 * 1024
+  property bool debugMode: false
+  property var debugLogLines: []
+  property string debugLogText: ""
+  property int debugLogRevision: 0
+  readonly property int maxDebugLogLines: 400
 
   // Tasks properties
   property string calendarId: ""
@@ -43,13 +48,14 @@ Item {
 
   // Debug: log when allTasks changes
   onAllTasksChanged: {
-    console.log("[Service] allTasks changed:", allTasks ? allTasks.length : 0)
+    debugLog("allTasks changed: " + (allTasks ? allTasks.length : 0))
   }
 
   signal refreshed()
   signal taskCreated(var task)
   signal taskUpdated(var task)
   signal taskDeleted(string uid)
+  signal taskCreateFailed(string reason)
 
   function plainDisplay(value, maxLen) {
     var text = String(value == null ? '' : value)
@@ -64,8 +70,54 @@ Item {
     return decodeURIComponent(Qt.resolvedUrl("helper/omarchy-calendar-helper").toString().replace(/^file:\/\//, ""))
   }
 
+  function debugLog(message) {
+    if (!debugMode) return
+    var line = "[" + new Date().toTimeString().slice(0, 8) + "] " + message
+    debugLogLines.push(line)
+    if (debugLogLines.length > maxDebugLogLines) debugLogLines.splice(0, debugLogLines.length - maxDebugLogLines)
+    debugLogText = debugLogLines.join("\n")
+    debugLogRevision++
+    console.log("[Service]", message)
+  }
+
+  function clearDebugLog() {
+    debugLogLines = []
+    debugLogText = ""
+    debugLogRevision++
+  }
+
+  function sanitizeUrl(url) {
+    return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1")
+  }
+
   function failMessage(payload, fallback) {
     return plainDisplay((payload && payload.error && payload.error.message) || fallback || "Calendar helper failed", 400)
+  }
+
+  function calendarById(id) {
+    var wanted = String(id || "")
+    var lists = [cachedCalendars, calendars]
+    for (var l = 0; l < lists.length; l++) {
+      var list = lists[l] || []
+      for (var i = 0; i < list.length; i++) {
+        var calendar = list[i]
+        if (calendar && String(calendar.id || "") === wanted) return calendar
+      }
+    }
+    return null
+  }
+
+  function calendarProviderById(id) {
+    var calendar = calendarById(id)
+    return calendar && calendar.provider ? String(calendar.provider) : provider
+  }
+
+  function cleanHelperErrorText(text, fallback) {
+    var raw = String(text || "")
+    var usage = raw.match(/^usage:[\s\S]*?\n\s*\n/)
+    if (usage) raw = raw.slice(usage[0].length)
+    raw = raw.replace(/\s*\n+\s*/g, " ").trim()
+    return plainDisplay(raw, 400) || fallback
   }
 
   function helperText(out, err) {
@@ -89,25 +141,26 @@ Item {
   }
 
   function listTasks(forceSync) {
-    console.log("[Service] listTasks called, cachedTasks.length:", cachedTasks.length, "forceSync:", forceSync)
+    debugLog("action: list-tasks" + (forceSync ? " (force)" : ""))
+    debugLog("listTasks called, cachedTasks.length: " + cachedTasks.length + " forceSync: " + forceSync)
     tasksGeneration += 1
     tasksErrorMessage = ""
     if (cachedTasks.length > 0) {
-      console.log("[Service] applying cached tasks:", cachedTasks.length)
+      debugLog("applying cached tasks: " + cachedTasks.length)
       applyTaskCache(cachedTasks, cachedCalendars)
       tasksStatus = "ready"
     }
     readTasksCache()
     var stale = !isNaN(tasksLastSyncAt.getTime()) && (Date.now() - tasksLastSyncAt.getTime() > 15 * 60 * 1000)
     var shouldSync = forceSync === true || (cachedTasks.length === 0 && !tasksListProc.running) || stale
-    console.log("[Service] shouldSync:", shouldSync, "stale:", stale)
+    debugLog("shouldSync: " + shouldSync + " stale: " + stale)
     if (shouldSync) startTasksLiveSync(false)
   }
 
   function startTasksLiveSync(ifChanged) {
-    console.log("[Service] startTasksLiveSync ifChanged:", ifChanged)
+    debugLog("startTasksLiveSync ifChanged: " + ifChanged)
     if (tasksListProc.running) {
-      console.log("[Service] startTasksLiveSync - already running, incrementing token")
+      debugLog("startTasksLiveSync - already running, incrementing token")
       tasksLiveToken += 1
       tasksListProc.token = -1
       return
@@ -119,13 +172,13 @@ Item {
     listTasksTimeout.restart()
     var cmd = [helperPath(), "list-tasks", "--provider", provider]
     if (calendarId) cmd.push("--calendar-id", calendarId)
-    console.log("[Service] startTasksLiveSync command:", cmd)
+    debugLog("startTasksLiveSync command: " + cmd)
     tasksListProc.command = cmd
     tasksListProc.running = true
   }
 
   function applyTaskCache(tasks, cals) {
-    console.log("[Service] applyTaskCache tasks:", tasks ? tasks.length : 0, "cals:", cals ? cals.length : 0)
+    debugLog("applyTaskCache tasks: " + (tasks ? tasks.length : 0) + " cals: " + (cals ? cals.length : 0))
     root.cachedTasks = tasks
     if (cals && cals.length > 0) {
       root.cachedCalendars = cals
@@ -134,7 +187,7 @@ Item {
     root.allTasks = tasks
     root.pendingTasks = tasks.filter(function(task) { return TaskModel.isPending(task) })
     root.doneTasks = tasks.filter(function(task) { return TaskModel.isCompleted(task) })
-    console.log("[Service] applyTaskCache result - allTasks:", root.allTasks.length, "pending:", root.pendingTasks.length, "done:", root.doneTasks.length)
+    debugLog("applyTaskCache result - allTasks: " + root.allTasks.length + " pending: " + root.pendingTasks.length + " done: " + root.doneTasks.length)
     root.tasksStatus = "ready"
     root.tasksErrorMessage = ""
     if (root.tasksSyncing) {
@@ -147,10 +200,10 @@ Item {
 
   function readTasksCache() {
     if (tasksCacheProc.running || tasksMutationBusy()) {
-      console.log("[Service] readTasksCache skipped - already running or mutating")
+      debugLog("readTasksCache skipped - already running or mutating")
       return
     }
-    console.log("[Service] readTasksCache starting")
+    debugLog("readTasksCache starting")
     tasksCacheProc.token = tasksCacheToken
     tasksCacheProc.command = [helperPath(), "list-tasks", "--from-cache", "--provider", provider]
     if (calendarId) tasksCacheProc.command.push("--calendar-id", calendarId)
@@ -159,10 +212,10 @@ Item {
 
   function writeCache() {
     if (tasksWriteCacheProc.running) {
-      console.log("[Service] writeCache skipped - already running")
+      debugLog("writeCache skipped - already running")
       return
     }
-    console.log("[Service] writeCache - tasks:", cachedTasks.length)
+    debugLog("writeCache - tasks: " + cachedTasks.length)
     tasksWriteCacheProc.secret = JSON.stringify({
       tasks: cachedTasks,
       calendars: cachedCalendars
@@ -172,28 +225,28 @@ Item {
   }
 
   function finishListCache(text, exitCode) {
-    console.log("[Service] finishListCache exitCode:", exitCode, "text length:", text ? text.length : 0)
+    debugLog("finishListCache exitCode: " + exitCode + " text length: " + (text ? text.length : 0))
     if (tasksIgnoreCache || tasksMutationBusy()) {
-      console.log("[Service] finishListCache skipped - ignoreCache or mutating")
+      debugLog("finishListCache skipped - ignoreCache or mutating")
       return
     }
     if (tasksCacheProc.token !== root.tasksCacheToken) {
-      console.log("[Service] finishListCache skipped - token mismatch")
+      debugLog("finishListCache skipped - token mismatch")
       return
     }
     var payload = TaskModel.parseHelperResponse(text)
-    console.log("[Service] finishListCache payload.ok:", payload.ok, "tasks:", payload.tasks ? payload.tasks.length : 0)
+    debugLog("finishListCache payload.ok: " + payload.ok + " tasks: " + (payload.tasks ? payload.tasks.length : 0))
     if (exitCode === 0 && payload.ok) {
       applyTaskCache(payload.tasks, payload.calendars)
     }
   }
 
   function finishListTasks(text, exitCode) {
-    console.log("[Service] finishListTasks exitCode:", exitCode, "text length:", text ? text.length : 0)
+    debugLog("finishListTasks exitCode: " + exitCode + " text length: " + (text ? text.length : 0))
     listTasksTimeout.stop()
     tasksSyncing = false
     var payload = TaskModel.parseHelperResponse(text)
-    console.log("[Service] finishListTasks payload.ok:", payload.ok, "tasks:", payload.tasks ? payload.tasks.length : 0)
+    debugLog("finishListTasks payload.ok: " + payload.ok + " tasks: " + (payload.tasks ? payload.tasks.length : 0))
     if (exitCode === 0 && payload.ok) {
       tasksIgnoreCache = false
       applyTaskCache(payload.tasks, payload.calendars)
@@ -205,9 +258,9 @@ Item {
     }
   }
 
-  function createTask(calendarIdArg, title, due, priority) {
+  function createTask(calendarIdArg, title, due, priority, description, categories) {
+    debugLog("action: create-task calendar=" + calendarIdArg + " title=" + title)
     var targetCalendar = String(calendarIdArg || calendarId || defaultCalendarId())
-    tasksStatus = "saving"
     tasksErrorMessage = ""
     if (tasksCreateProc.running) tasksCreateProc.running = false
     tasksPendingCreateId = "omarchy-task-pending-" + Date.now()
@@ -218,6 +271,8 @@ Item {
       due: due || "",
       status: "NEEDS-ACTION",
       priority: priority || "",
+      description: description || "",
+      categories: Array.isArray(categories) ? categories : [],
       calendarId: targetCalendar,
       calendarName: calendarNameById(targetCalendar)
     })
@@ -225,14 +280,22 @@ Item {
     var next = cachedTasks.slice()
     next.push(optimistic)
     applyTaskCache(next, cachedCalendars)
+    // Create owns its status values ("adding" / "added") so the panel banner
+    // can show create-specific text while update/delete keep "saving". Set
+    // after applyTaskCache, which optimistically resets the status to "ready".
+    tasksStatus = "adding"
     tasksCreateProc.command = [
       helperPath(), "create-task",
-      "--provider", provider,
+      "--provider", calendarProviderById(targetCalendar),
       "--calendar-id", targetCalendar,
       "--title", String(title || "(No title)"),
-      "--due", String(due || ""),
-      "--priority", String(priority || "")
+      "--due", String(due || "")
     ]
+    // Priority is optional: an empty string would trip the helper's int
+    // argparse, so only pass the flag when a priority was chosen.
+    if (priority !== undefined && priority !== null && String(priority) !== "") tasksCreateProc.command.push("--priority", String(priority))
+    if (description) tasksCreateProc.command.push("--description", String(description))
+    if (categories && categories.length > 0) tasksCreateProc.command.push("--categories", categories.join(","))
     tasksCreateProc.running = true
   }
 
@@ -244,18 +307,21 @@ Item {
         mergeTask(payload.tasks[0])
         root.taskCreated(payload.tasks[0])
       }
-      root.tasksStatus = "ready"
+      root.tasksStatus = "added"
       root.tasksErrorMessage = ""
       root.startTasksLiveSync(true)
+      taskAddedTimer.restart()
     } else {
       removePendingTask(root.tasksPendingCreateId)
       root.tasksStatus = "error"
       root.tasksErrorMessage = root.failMessage(payload, "Could not create task.")
+      root.taskCreateFailed(root.cleanHelperErrorText((payload && payload.error && payload.error.message) || tasksCreateErr.text, "Could not create task."))
     }
     root.tasksPendingCreateId = ""
   }
 
   function updateTask(task, statusArg, percentComplete) {
+    debugLog("action: update-task uid=" + (task ? task.uid : "") + " status=" + statusArg + " percent=" + percentComplete)
     if (!task || !task.uid || task._pending) return
     tasksStatus = "saving"
     tasksErrorMessage = ""
@@ -267,7 +333,7 @@ Item {
     mergeTask(next)
     var cmd = [
       helperPath(), "update-task",
-      "--provider", provider,
+      "--provider", calendarProviderById(task.calendarId),
       "--calendar-id", String(task.calendarId || defaultCalendarId()),
       "--uid", String(task.uid || ""),
       "--status", String(statusArg || task.status || "NEEDS-ACTION")
@@ -298,10 +364,12 @@ Item {
   }
 
   function completeTask(task) {
+    debugLog("action: complete-task uid=" + (task ? task.uid : "") + " title=" + (task ? task.title : ""))
     updateTask(task, "COMPLETED", 100)
   }
 
   function deleteTask(task) {
+    debugLog("action: delete-task uid=" + (task ? task.uid : "") + " title=" + (task ? task.title : ""))
     if (!task || !task.uid || task._pending) return
     tasksStatus = "saving"
     tasksErrorMessage = ""
@@ -310,7 +378,7 @@ Item {
     removeTaskByUid(task.uid)
     tasksDeleteProc.command = [
       helperPath(), "delete-task",
-      "--provider", provider,
+      "--provider", calendarProviderById(task.calendarId),
       "--calendar-id", String(task.calendarId || defaultCalendarId()),
       "--uid", String(task.uid || "")
     ]
@@ -386,6 +454,7 @@ Item {
   // ===== Calendar Removal =====
 
   function removeCalendar(calendarId) {
+    debugLog("action: remove-calendar id=" + calendarId)
     var id = String(calendarId || "")
     if (!id || removeProc.running || pendingRemoveId) return
     pendingRemoveId = id
@@ -412,19 +481,22 @@ Item {
   // ===== CalDAV Setup =====
 
   function setupCaldav(displayName, url, username, password) {
+    debugLog("action: setup-caldav url=" + sanitizeUrl(url))
     caldavSetupStatus = "connecting"
     caldavSetupMessage = ""
-    caldavSetupSecret = JSON.stringify({
+    caldavSetupProc.secret = JSON.stringify({
       "displayName": displayName,
       "url": url,
       "username": username,
       "password": password
     })
     caldavSetupProc.command = [helperPath(), "setup-caldav", "--provider", provider]
+    setupTimeout.restart()
     caldavSetupProc.running = true
   }
 
   function finishSetupCaldav(text, exitCode) {
+    setupTimeout.stop()
     var payload = TaskModel.parseHelperResponse(text)
     if (exitCode === 0 && payload.ok) {
       caldavSetupStatus = "success"
@@ -435,6 +507,7 @@ Item {
       caldavSetupStatus = "error"
       caldavSetupMessage = failMessage(payload)
     }
+    debugLog("action: setup-caldav finished: " + caldavSetupStatus)
   }
 
   // ===== Task Processes =====
@@ -448,9 +521,9 @@ Item {
     stderr: StdioCollector { id: tasksListErr; waitForEnd: true }
 
     onExited: function(exitCode) {
-      console.log("[Service] tasksListProc exited with code:", exitCode)
+      debugLog("tasksListProc exited with code: " + exitCode)
       if (token !== root.tasksLiveToken) {
-        console.log("[Service] tasksListProc token mismatch, ignoring")
+        debugLog("tasksListProc token mismatch, ignoring")
         root.tasksSyncing = false
         root.listTasksTimeout.stop()
         return
@@ -468,7 +541,7 @@ Item {
     stderr: StdioCollector { id: tasksCacheErr; waitForEnd: true }
 
     onExited: function(exitCode) {
-      console.log("[Service] tasksCacheProc exited with code:", exitCode)
+      debugLog("tasksCacheProc exited with code: " + exitCode)
       root.finishListCache(root.helperText(tasksCacheOut.text, tasksCacheErr.text), exitCode)
     }
   }
@@ -487,14 +560,14 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
   }
 
-  property string caldavSetupSecret: ""
   Process {
     id: caldavSetupProc
+    property string secret: ""
     running: false
     stdinEnabled: true
     onStarted: {
-      write(caldavSetupSecret + "\n")
-      caldavSetupSecret = ""
+      write(secret + "\n")
+      secret = ""
       stdinEnabled = false
     }
     stdout: StdioCollector { id: caldavSetupOut; waitForEnd: true }
@@ -555,6 +628,7 @@ Item {
   // ===== List Calendars =====
 
   function listCalendars() {
+    debugLog("action: list-calendars")
     if (listCalendarsProc.running) return
     listCalendarsProc.command = [helperPath(), "list-calendars", "--provider", provider]
     listCalendarsProc.running = true
@@ -566,7 +640,7 @@ Item {
       root.calendars = payload.calendars || []
       root.cachedCalendars = payload.calendars || []
     } else {
-      console.log("[Service] listCalendars failed:", failMessage(payload, "Failed to list calendars"))
+      debugLog("listCalendars failed: " + failMessage(payload, "Failed to list calendars"))
     }
   }
 
@@ -600,21 +674,45 @@ Item {
     }
   }
 
+  // Success flash for task creation: hold "added" long enough for the panel
+  // banner to display it, then fall back to the normal ready state. Guarded
+  // so an intervening status change (e.g. a finished live sync) is not
+  // reverted on top of.
+  Timer {
+    id: taskAddedTimer
+    interval: 2000
+    repeat: false
+    onTriggered: if (root.tasksStatus === "added") root.tasksStatus = "ready"
+  }
+
+  Timer {
+    id: setupTimeout
+    interval: 30000
+    running: false
+    repeat: false
+    onTriggered: {
+      if (caldavSetupProc.running) caldavSetupProc.running = false
+      caldavSetupStatus = "error"
+      caldavSetupMessage = "Setup timed out"
+      debugLog("setup-caldav timed out")
+    }
+  }
+
   Process {
     id: rightAnchorProc
     running: false
     stdout: StdioCollector { id: rightAnchorOut; waitForEnd: true }
     stderr: StdioCollector { id: rightAnchorErr; waitForEnd: true }
-    onStarted: console.log("[tasks-widget] ensure-right-anchor started", command)
+    onStarted: if (debugMode) console.log("[tasks-widget] ensure-right-anchor started", command)
     onExited: function(exitCode) {
-      console.log("[tasks-widget] ensure-right-anchor exited", exitCode,
+      if (debugMode) console.log("[tasks-widget] ensure-right-anchor exited", exitCode,
         "stdout=", rightAnchorOut.text,
         "stderr=", rightAnchorErr.text)
     }
   }
 
   function ensureRightAnchor() {
-    console.log("[tasks-widget] ensureRightAnchor helper=", helperPath(), "running=", rightAnchorProc.running)
+    if (debugMode) console.log("[tasks-widget] ensureRightAnchor helper=", helperPath(), "running=", rightAnchorProc.running)
     if (!rightAnchorProc.running) {
       rightAnchorProc.command = [helperPath(), "ensure-right-anchor", "--title", root.moduleName]
       rightAnchorProc.running = true
@@ -622,7 +720,7 @@ Item {
   }
 
   Component.onCompleted: {
-    console.log("[tasks-widget] Service.onCompleted moduleName=", root.moduleName)
+    if (debugMode) console.log("[tasks-widget] Service.onCompleted moduleName=", root.moduleName)
     listCalendars()
     Qt.callLater(ensureRightAnchor)
   }

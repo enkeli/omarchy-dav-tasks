@@ -998,7 +998,7 @@ def list_tasks_eds(calendar_id: str) -> dict:
     return {"ok": True, "provider": "evolution-data-server", "calendars": calendars, "tasks": all_tasks}
 
 
-def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> object:
+def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: datetime | None, description: str, categories: list[str], priority: int, status: str, percent: int, dtstart: datetime | None) -> object:
     now = datetime.now(UTC)
     lines = [
         "BEGIN:VTODO",
@@ -1008,12 +1008,17 @@ def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: d
         f"LAST-MODIFIED:{ics_datetime(now, False)}",
         f"SUMMARY:{ics_escape(title or '(No title)')}",
     ]
-    if dtstart:
+    # Strict CalDAV servers (Nextcloud) reject VTODOs whose DUE does not come
+    # after DTSTART; drop the redundant DTSTART when the due date is earlier
+    # or equal so the create validates.
+    if dtstart and (due is None or due > dtstart):
         lines.append(f"DTSTART:{ics_datetime(dtstart, False)}")
     if due:
         lines.append(f"DUE:{ics_datetime(due, False)}")
     if description:
         lines.append(f"DESCRIPTION:{ics_escape(description)}")
+    if categories:
+        lines.append(f"CATEGORIES:{','.join(ics_escape(category) for category in categories)}")
     status_map = {
         "needs-action": "NEEDS-ACTION",
         "completed": "COMPLETED",
@@ -1035,12 +1040,12 @@ def task_component_from_fields(modules: EdsModules, uid: str, title: str, due: d
     return ical
 
 
-def create_task_eds(calendar_id: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
+def create_task_eds(calendar_id: str, title: str, due: datetime | None, description: str, categories: list[str], priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
     modules, registry, source, client = eds_client_for_tasks(calendar_id)
     if client.is_readonly():
         raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
     uid = f"omarchy-calendar-{uuid4()}"
-    ical = task_component_from_fields(modules, uid, title, due, description, priority, status, percent, dtstart)
+    ical = task_component_from_fields(modules, uid, title, due, description, categories, priority, status, percent, dtstart)
     ok, created_uid = client.create_object_sync(ical, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
     if not ok:
         raise ValueError("EDS create_object_sync returned false.")
@@ -1110,6 +1115,250 @@ def delete_task_eds(calendar_id: str, uid: str) -> dict:
         raise ValueError("EDS remove_object_sync returned false.")
     remove_cache_task(":".join(part for part in [source.get_uid(), uid] if part))
     return {"ok": True, "provider": "evolution-data-server", "calendarId": source.get_uid(), "uid": uid}
+
+
+def caldav_task_session(calendar_id: str) -> tuple:
+    """Resolve a CalDAV-backed calendar source to a writable collection URL."""
+    modules = load_eds_modules()
+    registry = modules.EDataServer.SourceRegistry.new_sync(None)
+    source = source_for_calendar(registry, calendar_id, modules)
+    calendar = source_calendar(source, registry, modules)
+    href = source_webdav_url(source, modules)
+    username, password = lookup_source_credentials(source, registry, modules)
+    if not href:
+        raise ValueError(f"CalDAV collection URL is missing for calendar: {source.get_display_name()}")
+    if not username or not password:
+        raise ValueError(f"CalDAV credentials are missing for calendar: {source.get_display_name()}")
+    try:
+        client = modules.ECal.Client.connect_sync(source, modules.ECal.ClientSourceType.TASKS, 8, None)
+        if client and client.is_readonly():
+            raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    return modules, registry, source, calendar, href, username, password
+
+
+def caldav_task_resource(href: str, uid: str) -> str:
+    base = href if href.endswith("/") else href + "/"
+    return urljoin(base, f"{uid}.ics")
+
+
+def caldav_task_document(component) -> str:
+    nodes = []
+    ical = getattr(component, "get_icalcomponent", None)
+    if callable(ical):
+        nodes.append(ical())
+    nodes.append(component)
+    for node in nodes:
+        if node is not None and hasattr(node, "as_ical_string"):
+            text = str(node.as_ical_string() or "").strip()
+            if not text:
+                continue
+            if "BEGIN:VCALENDAR" in text.upper():
+                return text + "\r\n"
+            return (
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//omarchy-dav-tasks//EN\r\n"
+                + text
+                + "\r\nEND:VCALENDAR\r\n"
+            )
+    raise ValueError("Failed to serialize iCalendar task.")
+
+
+def caldav_component_task(component, calendar: dict, uid: str) -> dict:
+    task = component_task(component, calendar)
+    try:
+        if int(task.get("percentComplete") or 0) < 0:
+            task["percentComplete"] = 0
+    except (TypeError, ValueError):
+        pass
+    if uid:
+        task["hrefUid"] = uid
+    return task
+
+
+def unfold_ical_lines(text: str) -> list[str]:
+    lines = []
+    for raw in str(text or "").replace("\r\n", "\n").split("\n"):
+        if raw.startswith((" ", "\t")) and lines:
+            lines[-1] += raw[1:]
+        elif raw:
+            lines.append(raw)
+    return lines
+
+
+def parse_ical_datetime(value: str) -> datetime | None:
+    """Parse an iCalendar DATE or DATE-TIME value as UTC-aware for comparisons.
+
+    Always attaches UTC: the repair logic compares parsed stored values with
+    datetime parameters that are already timezone-aware, and mixing the two
+    raises "can't compare offset-naive and offset-aware datetimes".
+    """
+    text = str(value or "").strip().upper()
+    if text.endswith("Z"):
+        text = text[:-1]
+    for pattern in ("%Y%m%dT%H%M%S", "%Y%m%d"):
+        try:
+            return datetime.strptime(text, pattern).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def caldav_vtodo_updated_document(text: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> str:
+    """Rewrite mutable VTODO fields in place, carrying over all other properties."""
+    status_map = {
+        "needs-action": "NEEDS-ACTION",
+        "completed": "COMPLETED",
+        "in-process": "IN-PROCESS",
+        "cancelled": "CANCELLED",
+    }
+    ical_status = status_map.get(str(status or "").strip().lower(), "NEEDS-ACTION")
+    now = datetime.now(UTC)
+    updates: dict[str, str] = {
+        "STATUS": f"STATUS:{ical_status}",
+        "LAST-MODIFIED": f"LAST-MODIFIED:{ics_datetime(now, False)}",
+    }
+    if title:
+        updates["SUMMARY"] = f"SUMMARY:{ics_escape(title)}"
+    if description:
+        updates["DESCRIPTION"] = f"DESCRIPTION:{ics_escape(description)}"
+    if dtstart:
+        updates["DTSTART"] = f"DTSTART:{ics_datetime(dtstart, False)}"
+    if due:
+        updates["DUE"] = f"DUE:{ics_datetime(due, False)}"
+    if priority > 0:
+        updates["PRIORITY"] = f"PRIORITY:{priority}"
+    if percent > 0:
+        updates["PERCENT-COMPLETE"] = f"PERCENT-COMPLETE:{percent}"
+    if ical_status == "COMPLETED":
+        updates["COMPLETED"] = f"COMPLETED:{ics_datetime(now, False)}"
+    # Strict CalDAV servers (Nextcloud) reject VTODO puts whose DUE does not
+    # come after DTSTART, even when neither property is being changed. Repair
+    # stored objects that violate it by dropping the redundant DTSTART: the
+    # deadline (DUE) is the meaningful field for a task.
+    unfolded = unfold_ical_lines(text)
+    source_dtstart = ""
+    source_due = ""
+    for line in unfolded:
+        name = line.split(":", 1)[0].split(";", 1)[0].strip().upper()
+        if name not in ("DTSTART", "DUE") or ":" not in line:
+            continue
+        value = line.split(":", 1)[1].strip()
+        if name == "DTSTART" and not source_dtstart:
+            source_dtstart = value
+        elif name == "DUE" and not source_due:
+            source_due = value
+    final_dtstart = dtstart if dtstart is not None else parse_ical_datetime(source_dtstart)
+    final_due = due if due is not None else parse_ical_datetime(source_due)
+    drop_dtstart = final_dtstart is not None and final_due is not None and final_due <= final_dtstart
+    if drop_dtstart:
+        updates.pop("DTSTART", None)
+        sync_log("caldav-vtodo-repair", reason="due-not-after-dtstart")
+    removable = ("PERCENT-COMPLETE", "COMPLETED")
+    replaced: set[str] = set()
+    lines = []
+    for line in unfolded:
+        name = line.split(":", 1)[0].split(";", 1)[0].strip().upper()
+        if name in updates:
+            if name not in replaced:
+                lines.append(updates[name])
+                replaced.add(name)
+            continue
+        if name == "DTSTART" and drop_dtstart:
+            continue
+        if name in removable and name not in updates:
+            continue
+        lines.append(line)
+    insert_at = len(lines)
+    for index, line in enumerate(lines):
+        if line.strip().upper() == "END:VTODO":
+            insert_at = index
+            break
+    for name, line in updates.items():
+        if name not in replaced:
+            lines.insert(insert_at, line)
+            insert_at += 1
+    return "\r\n".join(lines) + "\r\n"
+
+
+def caldav_component_from_text(text: str, modules: EdsModules):
+    """Parse a stored resource back into an ECal.Component wrapping the VTODO."""
+    root = modules.ICalGLib.Component.new_from_string(text)
+    if not root:
+        raise ValueError("Failed to parse iCalendar task.")
+    name = str(root.get_component_name() or "").upper() if hasattr(root, "get_component_name") else ""
+    node = root if name == "VTODO" else root.get_first_component(modules.ICalGLib.ComponentKind.VTODO_COMPONENT)
+    if node is None:
+        raise ValueError("No VTODO component found in the stored task.")
+    return modules.ECal.Component.new_from_icalcomponent(node)
+
+
+def create_task_caldav(calendar_id: str, title: str, due: datetime | None, description: str, categories: list[str], priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
+    modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
+    uid = f"omarchy-calendar-{uuid4()}"
+    ical = task_component_from_fields(modules, uid, title, due, description, categories, priority, status, percent, dtstart)
+    document = caldav_task_document(ical)
+    status_code, body, _headers = caldav_http(
+        "PUT",
+        caldav_task_resource(href, uid),
+        username,
+        password,
+        document.encode("utf-8"),
+        {"Content-Type": "text/calendar; charset=utf-8"},
+    )
+    if status_code not in (200, 201, 204):
+        detail = caldav_error_detail(body)
+        sync_log("task-create-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task create failed with status {status_code}{suffix}.")
+    component = modules.ECal.Component.new_from_icalcomponent(ical.clone())
+    task = caldav_component_task(component, calendar, uid)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "caldav", "calendar": calendar, "task": task, "uid": uid}
+
+
+def update_task_caldav(calendar_id: str, uid: str, title: str, due: datetime | None, description: str, priority: int, status: str, percent: int, dtstart: datetime | None) -> dict:
+    if not uid:
+        raise ValueError("update-task requires --uid.")
+    modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
+    resource = caldav_task_resource(href, uid)
+    status_code, raw, _headers = caldav_http("GET", resource, username, password, b"", {})
+    if status_code != 200 or not raw:
+        raise ValueError(f"Task not found: {uid} (status {status_code}).")
+    document = caldav_vtodo_updated_document(raw.decode("utf-8", "replace"), title, due, description, priority, status, percent, dtstart)
+    status_code, body, _headers = caldav_http(
+        "PUT",
+        resource,
+        username,
+        password,
+        document.encode("utf-8"),
+        {"Content-Type": "text/calendar; charset=utf-8"},
+    )
+    if status_code not in (200, 201, 204):
+        detail = caldav_error_detail(body)
+        sync_log("task-update-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task update failed with status {status_code}{suffix}.")
+    task = caldav_component_task(caldav_component_from_text(document, modules), calendar, uid)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "caldav", "calendar": calendar, "task": task, "uid": uid}
+
+
+def delete_task_caldav(calendar_id: str, uid: str) -> dict:
+    if not uid:
+        raise ValueError("delete-task requires --uid.")
+    modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
+    resource = caldav_task_resource(href, uid)
+    status_code, body, _headers = caldav_http("DELETE", resource, username, password, b"", {})
+    if status_code not in (200, 204):
+        detail = caldav_error_detail(body)
+        sync_log("task-delete-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task delete failed with status {status_code}{suffix}.")
+    remove_cache_task(":".join(part for part in [calendar["id"], uid] if part))
+    return {"ok": True, "provider": "caldav", "calendarId": calendar["id"], "uid": uid}
 
 
 def eds_attach_discovered_calendars(modules: EdsModules, registry, parent, credentials, username: str, host: str, port: int, committed: list | None = None) -> list:
@@ -1546,6 +1795,22 @@ def caldav_http(method: str, url: str, username: str, password: str, body: bytes
     except Exception as error:
         sync_log("sync-http-error", method=method, host=parsed.hostname or "", error=str(error)[:200])
         return 0, b"", None
+
+
+def caldav_error_detail(raw: bytes, limit: int = 240) -> str:
+    """Bounded single-line excerpt of a DAV error response for user-facing errors.
+
+    Prefers the sabre/DAV <s:message> content, falls back to tag-stripped text.
+    """
+    text = (raw or b"").decode("utf-8", "replace")
+    if not text.strip():
+        return ""
+    match = re.search(r"<s:message>(.*?)</s:message>", text, re.S | re.I)
+    if match:
+        text = match.group(1)
+    else:
+        text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
 def href_event_uid(href: str) -> str:
@@ -2627,9 +2892,14 @@ def remove_cache_event(event_id: str) -> None:
     write_cache(cache, bump=True)
 
 
+def parse_optional_int(value: str) -> int:
+    text = str(value).strip()
+    return int(text) if text else 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-center-anchor", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
@@ -2638,6 +2908,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--title", default="")
     parser.add_argument("--location", default="")
     parser.add_argument("--description", default="")
+    parser.add_argument("--categories", default="")
     parser.add_argument("--all-day", action="store_true")
     parser.add_argument("--uid", default="")
     parser.add_argument("--rid", default="")
@@ -2649,8 +2920,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--if-changed", action="store_true")
     parser.add_argument("--status", default="needs-action")
     parser.add_argument("--percent-complete", type=int, default=0)
-    parser.add_argument("--priority", type=int, default=0)
+    parser.add_argument("--priority", type=parse_optional_int, default=0)
     parser.add_argument("--due", default="")
+    parser.add_argument("--dtstart", default="")
     args = parser.parse_args(argv)
 
     start = parse_instant(args.start)
@@ -2664,8 +2936,6 @@ def main(argv: list[str]) -> int:
             return emit_json(payload)
         if args.from_cache and args.operation == "list-tasks":
             return emit_json(cached_tasks_snapshot(args.provider))
-        if args.operation == "ensure-center-anchor":
-            return emit_json(ensure_center_anchor(args.title or "dev.enkeli.omadav"))
         if args.operation == "reminders-state":
             return emit_json(read_reminders())
         if args.operation == "reminders-save":
@@ -2717,24 +2987,35 @@ def main(argv: list[str]) -> int:
                 raise ValueError("list-tasks currently requires the evolution-data-server provider.")
             return emit_json(list_tasks_eds(args.calendar_id))
         if args.operation == "create-task":
-            if args.provider not in ("eds", "evolution-data-server"):
-                raise ValueError("create-task currently requires the evolution-data-server provider.")
+            if args.provider not in ("caldav", "eds", "evolution-data-server"):
+                raise ValueError("create-task currently requires the evolution-data-server or caldav provider.")
             due = parse_event_instant(args.due) if args.due else None
-            dtstart = start if args.start else None
-            return emit_json(create_task_eds(args.calendar_id, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
+            # Tasks take their own --dtstart: the --from window default must
+            # never leak in as an implicit DTSTART (it stamped every
+            # create/update with today's midnight, producing DUE<=DTSTART
+            # objects that strict CalDAV servers reject on update).
+            dtstart = parse_event_instant(args.dtstart) if args.dtstart else None
+            categories = sanitize_task_categories(str(args.categories or "").split(","))
+            if args.provider == "caldav":
+                return emit_json(create_task_caldav(args.calendar_id, args.title, due, args.description, categories, args.priority, args.status, args.percent_complete, dtstart))
+            return emit_json(create_task_eds(args.calendar_id, args.title, due, args.description, categories, args.priority, args.status, args.percent_complete, dtstart))
         if args.operation == "update-task":
             if not args.uid:
                 raise ValueError("update-task requires --uid.")
-            if args.provider not in ("eds", "evolution-data-server"):
-                raise ValueError("update-task currently requires the evolution-data-server provider.")
+            if args.provider not in ("caldav", "eds", "evolution-data-server"):
+                raise ValueError("update-task currently requires the evolution-data-server or caldav provider.")
             due = parse_event_instant(args.due) if args.due else None
-            dtstart = start if args.start else None
+            dtstart = parse_event_instant(args.dtstart) if args.dtstart else None
+            if args.provider == "caldav":
+                return emit_json(update_task_caldav(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
             return emit_json(update_task_eds(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
         if args.operation == "delete-task":
             if not args.uid:
                 raise ValueError("delete-task requires --uid.")
-            if args.provider not in ("eds", "evolution-data-server"):
-                raise ValueError("delete-task currently requires the evolution-data-server provider.")
+            if args.provider not in ("caldav", "eds", "evolution-data-server"):
+                raise ValueError("delete-task currently requires the evolution-data-server or caldav provider.")
+            if args.provider == "caldav":
+                return emit_json(delete_task_caldav(args.calendar_id, args.uid))
             return emit_json(delete_task_eds(args.calendar_id, args.uid))
         if args.operation == "tasks-save-cache":
             raw = read_stdin_limited(MAX_CACHE_BYTES)

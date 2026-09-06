@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dev.enkeli.omarchy-dav-tasks",
   "name": "Nextcloud Tasks",
-  "version": "0.0.7",
+  "version": "0.1.0",
   "author": "dev.enkeli.omarchy-dav-tasks",
   "license": "MIT",
   "description": "Sync Nextcloud tasks to the Omarchy bar widget.",
@@ -20,12 +20,14 @@
     "defaults": {
       "provider": "evolution-data-server",
       "maxUpcoming": 5,
-      "maxDone": 10
+      "maxDone": 10,
+      "debug": false
     },
     "schema": [
       { "key": "provider", "type": "string", "label": "Provider" },
       { "key": "maxUpcoming", "type": "number", "label": "Max upcoming tasks" },
-      { "key": "maxDone", "type": "number", "label": "Max completed tasks" }
+      { "key": "maxDone", "type": "number", "label": "Max completed tasks" },
+      { "key": "debug", "type": "boolean", "label": "Debug mode" }
     ]
   }
 }
