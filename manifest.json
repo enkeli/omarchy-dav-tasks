@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "dev.enkeli.omarchy-dav-tasks",
   "name": "Nextcloud Tasks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "dev.enkeli.omarchy-dav-tasks",
   "license": "MIT",
-  "description": "Sync Nextcloud tasks to the Omarchy bar widget.",
+  "description": "Sync Nextcloud (CalDAV) tasks to the Omarchy bar widget.",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
     "service": "Service.qml",
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Nextcloud Tasks",
-    "description": "Clock popup with local calendar events",
+    "description": "Nextcloud (CalDAV) Tasks widget with two-way sync",
     "category": "Time",
     "allowMultiple": false,
     "defaultSection": "right",

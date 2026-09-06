@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-PLUGIN_ID="sirwizardlizard.calendar"
-REPO_URL="https://github.com/SirWizardLizard/omarchy-caldav-calendar"
+PLUGIN_ID="dev.enkeli.omarchy-dav-tasks"
+REPO_URL="https://github.com/enkeli/omarchy-dav-tasks"
 MARKETPLACE="HANCORE-linux/omarchy-plugin-marketplace"
 SHA="$(git rev-parse HEAD)"
 VERSION="$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')"

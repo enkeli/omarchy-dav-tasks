@@ -5,7 +5,7 @@ A task widget for the Omarchy shell. Sync with Nextcloud Tasks and manage your t
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/enkeli/omarchy-dav --enable
+omarchy plugin add https://github.com/enkeli/omarchy-dav-tasks --enable
 ```
 
 ## What it does

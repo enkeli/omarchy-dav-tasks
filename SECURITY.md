@@ -1,6 +1,6 @@
 # Security
 
-Calendar accounts can expose sensitive personal data. Treat this plugin and its helper as code with access to the user's calendar metadata and events.
+Nextcloud accounts can expose sensitive personal data. Treat this plugin and its helper as code with access to the user's task list metadata and tasks.
 
 ## Credential Handling
 
@@ -12,7 +12,7 @@ Calendar accounts can expose sensitive personal data. Treat this plugin and its 
 
 ## Provider Access
 
-The plugin should read and write calendar data through local Evolution Data Server APIs. It should not proxy calendar data through a hosted third-party service.
+The plugin should read and write task data through local Evolution Data Server APIs. It should not proxy task data through a hosted third-party service.
 
 ## Reporting
 

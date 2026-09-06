@@ -2,7 +2,7 @@ name: marketplace-verify
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - manifest.json
   workflow_dispatch:

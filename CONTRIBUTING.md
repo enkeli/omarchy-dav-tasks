@@ -20,7 +20,7 @@ This project follows Omarchy's plugin model and development conventions where ap
 
 ## Branching
 
-`main` only accepts pull requests. Open a branch, push it, and merge through GitHub. GitHub Actions runs `./test/all` on every PR.
+`master` only accepts pull requests. Open a branch, push it, and merge through GitHub. GitHub Actions runs `./test/all` on every PR.
 
 ## Verification
 
@@ -44,15 +44,15 @@ omarchy restart shell
 
 ## Marketplace updates
 
-`omarchy plugin update` pulls `main`. [omarchyplugins.com](https://omarchyplugins.com) stays on a pinned verified SHA until a **[Verify]** issue is filed.
+`omarchy plugin update` pulls `master`. [omarchyplugins.com](https://omarchyplugins.com) stays on a pinned verified SHA until a **[Verify]** issue is filed.
 
 Bump `version` in `manifest.json` on the release PR. After that merge:
 
-- `.github/workflows/release.yml` tags `vX.Y.Z` and publishes a GitHub Release with generated notes (skipped if the version did not change or the tag already exists). You can also run the **release** workflow by hand for the current `main` SHA.
+- `.github/workflows/release.yml` tags `vX.Y.Z` and publishes a GitHub Release with generated notes (skipped if the version did not change or the tag already exists). You can also run the **release** workflow by hand for the current `master` SHA.
 - `.github/workflows/marketplace-verify.yml` files the verify issue if the `MARKETPLACE_TOKEN` secret is set (classic PAT with `public_repo`). Without the secret it opens a reminder issue on this repo instead.
 
-GitHub Releases and the marketplace pin are independent. Users who clone this repo follow tags; `omarchy plugin update` still tracks `main` until a marketplace verify lands.
+GitHub Releases and the marketplace pin are independent. Users who clone this repo follow tags; `omarchy plugin update` still tracks `master` until a marketplace verify lands.
 
 ## Upstream Boundaries
 
-This repository is the right home for provider-backed calendar integration. Omarchy core PRs should be limited to generic shell/plugin capabilities that this plugin proves are missing.
+This repository is the right home for provider-backed task integration. Omarchy core PRs should be limited to generic shell/plugin capabilities that this plugin proves are missing.
