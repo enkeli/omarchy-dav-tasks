@@ -262,6 +262,30 @@ def run() -> int:
                     and reopened_task.get("completed") == "",
                     str(reopened),
                 )
+                control(base, {"op": "put-fault", "on": True, "status": 415})
+                faulted = ""
+                try:
+                    mod.update_task_caldav("work", uid, "", None, "", 0, "completed", 100, None)
+                except ValueError as error:
+                    faulted = str(error)
+                finally:
+                    control(base, {"op": "put-fault", "on": False})
+                check(
+                    "caldav update failure carries the server detail",
+                    "status 415" in faulted and "Unsupported Media Type" in faulted,
+                    faulted,
+                )
+                logged = ""
+                log_path = Path(cache_dir) / "sync.log"
+                if log_path.is_file():
+                    for line in log_path.read_text(encoding="utf-8").splitlines():
+                        try:
+                            entry = json.loads(line)
+                        except Exception:
+                            continue
+                        if entry.get("message") == "task-update-failed":
+                            logged = json.dumps(entry)
+                check("failed task writes land in sync.log", "task-update-failed" in logged and "415" in logged and uid in logged, logged)
                 deleted = mod.delete_task_caldav("work", uid)
                 check("caldav delete-task removes the task", deleted.get("ok") is True, str(deleted))
                 status_code, _raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})

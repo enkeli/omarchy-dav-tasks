@@ -22,12 +22,21 @@ def wrap_ics(uid: str, summary: str, start: str, end: str) -> str:
     )
 
 
+FAULT_BODY = (
+    '<?xml version="1.0" encoding="utf-8"?>\r\n'
+    '<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">'
+    "<s:message>Unsupported Media Type</s:message></d:error>\r\n"
+).encode()
+
+
 class Store:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.token = 1
         self.stale_404s: list[str] = []
         self.truncate = False
+        self.put_fault = False
+        self.put_fault_status = 415
         self.calendars = {
             "work": {"name": "Work", "events": {}, "tasks": {}},
             "personal": {"name": "Personal", "events": {}, "tasks": {}},
@@ -160,6 +169,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         calendar, filename = unquote(match.group(1)), unquote(match.group(2))
         raw = self._read_body().decode("utf-8", "replace")
+        with self._store().lock:
+            if self._store().put_fault:
+                self._send(self._store().put_fault_status, FAULT_BODY)
+                return
         uid_match = re.search(r"^UID:(.+)$", raw, re.M)
         sum_match = re.search(r"^SUMMARY:(.+)$", raw, re.M)
         uid = (uid_match.group(1).strip() if uid_match else f"{filename}@test")
@@ -231,6 +244,9 @@ class Handler(BaseHTTPRequestHandler):
                 store.bump()
             elif op == "truncate":
                 store.truncate = bool(payload.get("on", True))
+            elif op == "put-fault":
+                store.put_fault = bool(payload.get("on", True))
+                store.put_fault_status = int(payload.get("status") or 415)
             else:
                 self._send(400, b"")
                 return

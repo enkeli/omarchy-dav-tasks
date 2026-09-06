@@ -1255,7 +1255,7 @@ def create_task_caldav(calendar_id: str, title: str, due: datetime | None, descr
     uid = f"omarchy-calendar-{uuid4()}"
     ical = task_component_from_fields(modules, uid, title, due, description, categories, priority, status, percent, dtstart)
     document = caldav_task_document(ical)
-    status_code, _body, _headers = caldav_http(
+    status_code, body, _headers = caldav_http(
         "PUT",
         caldav_task_resource(href, uid),
         username,
@@ -1264,7 +1264,10 @@ def create_task_caldav(calendar_id: str, title: str, due: datetime | None, descr
         {"Content-Type": "text/calendar; charset=utf-8"},
     )
     if status_code not in (200, 201, 204):
-        raise ValueError(f"CalDAV task create failed with status {status_code}.")
+        detail = caldav_error_detail(body)
+        sync_log("task-create-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task create failed with status {status_code}{suffix}.")
     component = modules.ECal.Component.new_from_icalcomponent(ical.clone())
     task = caldav_component_task(component, calendar, uid)
     merge_cache_task(task)
@@ -1278,9 +1281,9 @@ def update_task_caldav(calendar_id: str, uid: str, title: str, due: datetime | N
     resource = caldav_task_resource(href, uid)
     status_code, raw, _headers = caldav_http("GET", resource, username, password, b"", {})
     if status_code != 200 or not raw:
-        raise ValueError(f"Task not found: {uid}")
+        raise ValueError(f"Task not found: {uid} (status {status_code}).")
     document = caldav_vtodo_updated_document(raw.decode("utf-8", "replace"), title, due, description, priority, status, percent, dtstart)
-    status_code, _body, _headers = caldav_http(
+    status_code, body, _headers = caldav_http(
         "PUT",
         resource,
         username,
@@ -1289,7 +1292,10 @@ def update_task_caldav(calendar_id: str, uid: str, title: str, due: datetime | N
         {"Content-Type": "text/calendar; charset=utf-8"},
     )
     if status_code not in (200, 201, 204):
-        raise ValueError(f"CalDAV task update failed with status {status_code}.")
+        detail = caldav_error_detail(body)
+        sync_log("task-update-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task update failed with status {status_code}{suffix}.")
     task = caldav_component_task(caldav_component_from_text(document, modules), calendar, uid)
     merge_cache_task(task)
     return {"ok": True, "provider": "caldav", "calendar": calendar, "task": task, "uid": uid}
@@ -1300,9 +1306,12 @@ def delete_task_caldav(calendar_id: str, uid: str) -> dict:
         raise ValueError("delete-task requires --uid.")
     modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
     resource = caldav_task_resource(href, uid)
-    status_code, _body, _headers = caldav_http("DELETE", resource, username, password, b"", {})
+    status_code, body, _headers = caldav_http("DELETE", resource, username, password, b"", {})
     if status_code not in (200, 204):
-        raise ValueError(f"CalDAV task delete failed with status {status_code}.")
+        detail = caldav_error_detail(body)
+        sync_log("task-delete-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task delete failed with status {status_code}{suffix}.")
     remove_cache_task(":".join(part for part in [calendar["id"], uid] if part))
     return {"ok": True, "provider": "caldav", "calendarId": calendar["id"], "uid": uid}
 
@@ -1741,6 +1750,22 @@ def caldav_http(method: str, url: str, username: str, password: str, body: bytes
     except Exception as error:
         sync_log("sync-http-error", method=method, host=parsed.hostname or "", error=str(error)[:200])
         return 0, b"", None
+
+
+def caldav_error_detail(raw: bytes, limit: int = 240) -> str:
+    """Bounded single-line excerpt of a DAV error response for user-facing errors.
+
+    Prefers the sabre/DAV <s:message> content, falls back to tag-stripped text.
+    """
+    text = (raw or b"").decode("utf-8", "replace")
+    if not text.strip():
+        return ""
+    match = re.search(r"<s:message>(.*?)</s:message>", text, re.S | re.I)
+    if match:
+        text = match.group(1)
+    else:
+        text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
 def href_event_uid(href: str) -> str:
