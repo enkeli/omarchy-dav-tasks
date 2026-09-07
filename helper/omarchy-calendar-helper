@@ -2194,7 +2194,13 @@ def eds_snapshot(start: datetime, end: datetime, include_events: bool = True, if
     seen_caldav = set()
 
     for source in sources:
-        if not registry.check_enabled(source):
+        source_enabled = bool(registry.check_enabled(source))
+        if not source_enabled:
+            # Disabled calendars stay listed (flag enabled: false) so the UI can
+            # re-enable them; skip event sync and dedupe handling for them.
+            calendar = source_calendar(source, registry, modules)
+            calendar["enabled"] = False
+            calendars.append(calendar)
             continue
         if is_unresolved_caldav_root(source, registry, modules):
             continue
@@ -2204,6 +2210,7 @@ def eds_snapshot(start: datetime, end: datetime, include_events: bool = True, if
                 continue
             seen_caldav.add(key)
         calendar = source_calendar(source, registry, modules)
+        calendar["enabled"] = True
         listed = False
         client = None
         try:
@@ -2890,6 +2897,40 @@ def eds_remove_calendar(calendar_id: str) -> dict:
     return {"ok": True, "provider": "evolution-data-server", "calendarId": calendar_id}
 
 
+def eds_set_calendar_enabled(calendar_id: str, enabled: bool) -> dict:
+    calendar_id = str(calendar_id or "").strip()
+    if not is_omarchy_source_uid(calendar_id):
+        raise ValueError("Calendar not found.")
+    modules = load_eds_modules()
+    registry = modules.EDataServer.SourceRegistry.new_sync(None)
+    source = registry.ref_source(calendar_id)
+    if source is None:
+        raise ValueError("Calendar not found.")
+    source.set_enabled(enabled)
+    if not registry.commit_source_sync(source, None):
+        raise ValueError("Unable to update this calendar.")
+    cache = read_cache()
+    if cache:
+        calendars = []
+        for calendar in cache.get("calendars") or []:
+            if calendar.get("id") == calendar_id:
+                calendar = dict(calendar)
+                calendar["enabled"] = enabled
+            calendars.append(calendar)
+        cache["calendars"] = calendars
+        if not enabled:
+            cache["events"] = [event for event in (cache.get("events") or []) if event.get("calendarId") != calendar_id]
+        write_cache(cache)
+    if not enabled:
+        tasks = read_tasks_cache()
+        if tasks:
+            kept = [task for task in (tasks.get("tasks") or []) if (task or {}).get("calendarId") != calendar_id]
+            if len(kept) != len(tasks.get("tasks") or []):
+                tasks["tasks"] = kept
+                write_tasks_cache(tasks, bump=False)
+    return {"ok": True, "provider": "evolution-data-server", "calendarId": calendar_id, "enabled": enabled}
+
+
 def remove_cache_event(event_id: str) -> None:
     cache = read_cache()
     if not cache or not event_id:
@@ -2911,12 +2952,13 @@ def parse_optional_int(value: str) -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "set-calendar-enabled", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
     parser.add_argument("--calendar-id", default="")
     parser.add_argument("--to-calendar-id", default="")
+    parser.add_argument("--enabled", default="true")
     parser.add_argument("--title", default="")
     parser.add_argument("--location", default="")
     parser.add_argument("--description", default="")
@@ -2985,6 +3027,13 @@ def main(argv: list[str]) -> int:
             if args.provider not in ("eds", "evolution-data-server"):
                 raise ValueError("remove-calendar currently requires the evolution-data-server provider.")
             return emit_json(eds_remove_calendar(args.calendar_id))
+        if args.operation == "set-calendar-enabled":
+            if not args.calendar_id:
+                raise ValueError("set-calendar-enabled requires --calendar-id.")
+            if args.provider not in ("eds", "evolution-data-server"):
+                raise ValueError("set-calendar-enabled currently requires the evolution-data-server provider.")
+            flag = str(args.enabled or "").strip().lower() in ("1", "true", "yes")
+            return emit_json(eds_set_calendar_enabled(args.calendar_id, flag))
         if args.operation == "update-calendars":
             raw = read_stdin_limited(MAX_REMINDER_BYTES)
             items = bound_items((json.loads(raw or "{}") or {}).get("calendars") or [], MAX_CALENDARS)

@@ -124,13 +124,14 @@ function parseHelperResponse(text) {
     return {
       ok: parsed.ok === true,
       provider: String(parsed.provider || ''),
+      enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : null,
       calendars: Array.isArray(parsed.calendars) ? parsed.calendars : [],
       tasks: normalizeTasks(rawTasks),
       rev: typeof parsed.rev === 'number' ? parsed.rev : null,
       error: parsed.error || null
     }
   } catch (error) {
-    return { ok: false, provider: '', calendars: [], tasks: [], rev: null, error: { code: 'invalid-json', message: String(error) } }
+    return { ok: false, provider: '', enabled: null, calendars: [], tasks: [], rev: null, error: { code: 'invalid-json', message: String(error) } }
   }
 }
 
@@ -160,8 +161,26 @@ function formatCompletedDate(task, timeFormat) {
 
 var DEFAULT_CALENDAR_COLORS = ['#8aadf4', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7', '#94e2d5', '#fab387', '#89dceb', '#f2cdcd', '#b4befe']
 
-function canRemoveCalendar(calendar) {
+function canToggleCalendar(calendar) {
   return String(calendar && calendar.id || '').indexOf('omarchy-calendar-') === 0
+}
+
+function serverConnections(calendars) {
+  var servers = []
+  var byHost = {}
+  var list = Array.isArray(calendars) ? calendars : []
+  for (var i = 0; i < list.length; i++) {
+    var cal = list[i]
+    if (!cal) continue
+    var id = String(cal.id || '')
+    if (id.indexOf('omarchy-calendar-') !== 0) continue
+    var host = String(cal.host || '').toLowerCase().replace(/^www\./, '')
+    if (!host) continue
+    if (!byHost[host]) { byHost[host] = { host: host, count: 0 }; servers.push(byHost[host]) }
+    byHost[host].count++
+  }
+  servers.sort(function(a, b) { return a.host < b.host ? -1 : a.host > b.host ? 1 : 0 })
+  return servers
 }
 
 function providerLabel(provider, host) {
@@ -223,7 +242,8 @@ if (typeof module !== 'undefined') module.exports = {
   parseHelperResponse,
   formatDueDate,
   formatCompletedDate,
-  canRemoveCalendar,
+  canToggleCalendar,
+  serverConnections,
   providerLabel,
   calendarDisplayName,
   calendarDisplayColor,

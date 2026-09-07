@@ -39,9 +39,9 @@ Item {
   property string pendingDeleteUid: ""
   property string moduleName: "dev.enkeli.omarchy-dav-tasks"
 
-  // Calendar removal properties
-  property string pendingRemoveId: ""
-  property string removeError: ""
+  // Calendar enable/disable properties
+  property string pendingToggleId: ""
+  property string toggleError: ""
 
   // CalDAV setup properties
   property string caldavSetupStatus: "idle"
@@ -454,31 +454,34 @@ Item {
     return "Calendar"
   }
 
-  // ===== Calendar Removal =====
+  // ===== Calendar Enable/Disable =====
 
-  function removeCalendar(calendarId) {
-    debugLog("action: remove-calendar id=" + calendarId)
+  function setCalendarEnabled(calendarId, enabled) {
+    debugLog("action: set-calendar-enabled id=" + calendarId + " enabled=" + enabled)
     var id = String(calendarId || "")
-    if (!id || removeProc.running || pendingRemoveId) return
-    pendingRemoveId = id
-    removeError = ""
-    removeProc.command = [helperPath(), "remove-calendar", "--provider", provider, "--calendar-id", id]
-    removeProc.running = true
+    if (!id || calendarToggleProc.running || pendingToggleId) return
+    pendingToggleId = id
+    toggleError = ""
+    calendarToggleProc.command = [helperPath(), "set-calendar-enabled", "--provider", provider, "--calendar-id", id, "--enabled", enabled ? "true" : "false"]
+    calendarToggleProc.running = true
   }
 
-  function finishRemoveCalendar(text, exitCode) {
+  function finishSetCalendarEnabled(text, exitCode) {
     var payload = TaskModel.parseHelperResponse(text)
     if (exitCode === 0 && payload.ok) {
-      var id = pendingRemoveId
-      root.cachedCalendars = cachedCalendars.filter(function(cal) { return cal && cal.id !== id })
+      var id = pendingToggleId
+      var enabled = !!payload.enabled
+      var mapCalendars = function(cal) {
+        return cal && cal.id === id ? Object.assign({}, cal, { enabled: enabled }) : cal
+      }
+      root.cachedCalendars = cachedCalendars.map(mapCalendars)
       root.calendars = root.cachedCalendars
-      root.cachedTasks = cachedTasks.filter(function(task) { return task && task.calendarId !== id })
-      pendingRemoveId = ""
-      removeError = ""
+      pendingToggleId = ""
+      toggleError = ""
       listTasks(true)
     } else {
-      removeError = failMessage(payload, "Could not remove calendar.")
-      pendingRemoveId = ""
+      toggleError = failMessage(payload, "Could not update calendar.")
+      pendingToggleId = ""
     }
   }
 
@@ -626,14 +629,14 @@ Item {
   }
 
   Process {
-    id: removeProc
+    id: calendarToggleProc
     running: false
 
-    stdout: StdioCollector { id: removeOut; waitForEnd: true }
-    stderr: StdioCollector { id: removeErr; waitForEnd: true }
+    stdout: StdioCollector { id: toggleOut; waitForEnd: true }
+    stderr: StdioCollector { id: toggleErr; waitForEnd: true }
 
     onExited: function(exitCode) {
-      root.finishRemoveCalendar(root.helperText(removeOut.text, removeErr.text), exitCode)
+      root.finishSetCalendarEnabled(root.helperText(toggleOut.text, toggleErr.text), exitCode)
     }
   }
 
