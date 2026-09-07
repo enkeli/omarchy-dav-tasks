@@ -46,6 +46,20 @@ fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper remove-calendar validates id"
 
+if "$ROOT/helper/omarchy-calendar-helper" set-calendar-enabled --provider evolution-data-server >"$tmp" 2>/dev/null; then
+  echo "not ok - set-calendar-enabled without id should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
+echo "ok - helper set-calendar-enabled validates id"
+
+if "$ROOT/helper/omarchy-calendar-helper" set-calendar-enabled --provider evolution-data-server --calendar-id birthdays --enabled false >"$tmp" 2>/dev/null; then
+  echo "not ok - set-calendar-enabled with a non-omarchy id should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed" and .error.message == "Calendar not found."' "$tmp" >/dev/null
+echo "ok - helper set-calendar-enabled rejects non-omarchy ids"
+
 if "$ROOT/helper/omarchy-calendar-helper" update-event --provider evolution-data-server --calendar-id missing --from 2026-08-20T09:00:00Z --to 2026-08-20T10:00:00Z >"$tmp" 2>/dev/null; then
   echo "not ok - update-event without uid should fail" >&2
   exit 1
@@ -466,3 +480,77 @@ assert parsed[0]["uid"] == "1787612053560@forwardemail.net"
 assert parsed[0]["title"] == "Test event creation in forwardemail"
 assert parsed[0]["start"] == "2026-08-24T05:00:00Z"
 print("ok - helper forwardemail ics parse")' "$ROOT/helper/omarchy-calendar-helper"
+
+if [[ ${OMARCHY_CALENDAR_WRITE_TEST:-} == "1" ]]; then
+python3 - "$ROOT/helper/omarchy-calendar-helper" <<'PY'
+import importlib.machinery
+import importlib.util
+import sys
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+spec = importlib.util.spec_from_loader("helper", importlib.machinery.SourceFileLoader("helper", sys.argv[1]))
+helper = importlib.util.module_from_spec(spec)
+sys.modules["helper"] = helper
+spec.loader.exec_module(helper)
+
+try:
+    modules = helper.load_eds_modules()
+except Exception:
+    print("ok - helper set-calendar-enabled EDS round-trip skipped (no EDS)")
+    raise SystemExit(0)
+
+registry = modules.EDataServer.SourceRegistry.new_sync(None)
+uid = f"omarchy-calendar-local-{uuid4()}"
+scratch = modules.EDataServer.Source.new_with_uid(uid, None)
+scratch.set_display_name("Omarchy Calendar Temporary Toggle Test")
+scratch.set_enabled(True)
+calendar_ext = scratch.get_extension(modules.EDataServer.SOURCE_EXTENSION_CALENDAR)
+calendar_ext.set_backend_name("local")
+
+start = datetime.now(UTC) - timedelta(days=1)
+end = datetime.now(UTC) + timedelta(days=1)
+
+def listed_entry(id):
+    payload = helper.eds_snapshot(start, end, False, False)
+    return next((cal for cal in payload.get("calendars") or [] if cal.get("id") == id), None)
+
+try:
+    source = helper.commit_new_source(registry, scratch)
+    assert source is not None, "commit_new_source returned None"
+
+    assert listed_entry(uid).get("enabled") is True
+
+    disabled = helper.eds_set_calendar_enabled(uid, False)
+    assert disabled["ok"] is True and disabled["enabled"] is False
+    entry = listed_entry(uid)
+    assert entry is not None and entry.get("enabled") is False
+
+    # disabling drops that calendar's cached events and tasks
+    helper.write_cache({"ok": True, "calendars": [{"id": uid, "enabled": True}], "events": [
+        {"id": "keep", "calendarId": "other"},
+        {"id": "gone", "calendarId": uid},
+    ]})
+    helper.write_tasks_cache({"ok": True, "provider": "eds", "tasks": [
+        {"id": "keep", "calendarId": "other"},
+        {"id": "gone", "calendarId": uid},
+    ]})
+    helper.eds_set_calendar_enabled(uid, False)
+    cache = helper.read_cache()
+    assert [event["id"] for event in cache["events"]] == ["keep"]
+    tasks = helper.read_tasks_cache()
+    assert [task["id"] for task in tasks["tasks"]] == ["keep"]
+
+    enabled = helper.eds_set_calendar_enabled(uid, True)
+    assert enabled["ok"] is True and enabled["enabled"] is True
+    entry = listed_entry(uid)
+    assert entry is not None and entry.get("enabled") is True
+finally:
+    helper.discard_committed_source(registry, uid)
+
+assert registry.ref_source(uid) is None, "cleanup left the source behind"
+print("ok - helper set-calendar-enabled EDS round-trip")
+PY
+else
+  echo "ok - helper set-calendar-enabled EDS round-trip skipped (set OMARCHY_CALENDAR_WRITE_TEST=1)"
+fi

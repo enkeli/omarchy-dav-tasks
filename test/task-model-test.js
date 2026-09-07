@@ -140,6 +140,43 @@ assert.equal(badRevResponse.rev, null)
 const errorRevResponse = model.parseHelperResponse('{')
 assert.equal(errorRevResponse.rev, null)
 
+// canToggleCalendar
+assert.equal(model.canToggleCalendar({ id: 'omarchy-calendar-caldav-abc' }), true)
+assert.equal(model.canToggleCalendar({ id: 'omarchy-calendar-local-123' }), true)
+assert.equal(model.canToggleCalendar({ id: 'c3742f32c586dbe48f75eeb0' }), false)
+assert.equal(model.canToggleCalendar({ id: 'local-stub' }), false)
+assert.equal(model.canToggleCalendar({}), false)
+assert.equal(model.canToggleCalendar(null), false)
+
+// parseHelperResponse carries the enabled flag for set-calendar-enabled
+const toggleResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'evolution-data-server', calendarId: 'c1', enabled: false }))
+assert.equal(toggleResponse.ok, true)
+assert.equal(toggleResponse.enabled, false)
+const enableResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'evolution-data-server', calendarId: 'c1', enabled: true }))
+assert.equal(enableResponse.enabled, true)
+const noEnabledResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'eds' }))
+assert.equal(noEnabledResponse.enabled, null)
+
+// serverConnections - distinct plugin-created servers grouped by host
+const serverInput = [
+  { id: 'omarchy-calendar-caldav-a', host: 'Caldav.Fastmail.com' },
+  { id: 'omarchy-calendar-caldav-b', host: 'www.caldav.fastmail.com' },
+  { id: 'omarchy-calendar-caldav-c', host: 'caldav.icloud.com' },
+  { id: 'omarchy-calendar-local-d', host: '' },
+  { id: 'c3742f32c586dbe48f75eeb0', host: 'google.com' },
+  null
+]
+const servers = model.serverConnections(serverInput)
+assert.deepEqual(servers, [
+  { host: 'caldav.fastmail.com', count: 2 },
+  { host: 'caldav.icloud.com', count: 1 }
+])
+assert.equal(model.serverConnections([]).length, 0)
+assert.equal(model.serverConnections(undefined).length, 0)
+assert.equal(model.serverConnections(null).length, 0)
+assert.equal(model.serverConnections('bad').length, 0)
+assert.equal(model.serverConnections([{ id: 'omarchy-calendar-x', host: 'caldav.example.com' }]).length, 1)
+
 // formatDueDate
 assert.equal(model.formatDueDate(null), '')
 assert.equal(model.formatDueDate({}), '')

@@ -18,6 +18,11 @@ Column {
   property string activeTab: "pending"
   property date now: new Date()
 
+  // One entry per distinct plugin-managed CalDAV server, sorted by host, each
+  // with its calendar count (disabled ones included). Drives the read-only
+  // Servers section in the config tab.
+  readonly property var serverConnections: TaskModel.serverConnections(calendarService ? calendarService.calendars : [])
+
   // True while the add-task view owns keyboard input (text fields focused,
   // calendar dropdown popup open, due-date picker open). Panel.qml binds the
   // key catcher's `blocked` to this so typing reaches the form.
@@ -42,6 +47,19 @@ Column {
 
   function sanitizeUrl(url) {
     return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1")
+  }
+
+  // Dismiss the connect-server form and drop any finished setup state so the
+  // next attempt starts clean. Password must never linger in the field.
+  function closeCaldavForm() {
+    caldavSuccessCloseTimer.stop()
+    caldavUrlField.text = ""
+    caldavUsernameField.text = ""
+    caldavPasswordField.text = ""
+    caldavForm.visible = false
+    if (calendarService && calendarService.caldavSetupStatus === "success") {
+      calendarService.resetCaldavSetup()
+    }
   }
 
   // VTODO priority is the string "1"-"9" (1 = highest) or "" when unset.
@@ -552,8 +570,8 @@ Column {
         // Destructive delete: the first click arms (the label swaps to an
         // explicit confirm), a second click fires the delete. Arming expires
         // via deleteArmTimer, and collapse or a model rebuild disarms. Kept
-        // compact and right-aligned — like the config tab's Remove action — so
-        // the irreversible target stays small and out of the reading flow.
+        // compact and right-aligned so the irreversible target stays small
+        // and out of the reading flow.
         Button {
           id: deleteTaskButton
           anchors.right: parent.right
@@ -563,7 +581,7 @@ Column {
           tooltipText: taskItem.deleteArmed ? "Click again to delete this task" : "Delete this task"
           foreground: Color.urgent
           bordered: true
-          // Mirrors the Remove-calendar guard: one in-flight delete at a time
+          // Like the calendar-toggle guard: one in-flight delete at a time
           // service-wide. The expanded gate also keeps the opacity-hidden
           // detail from catching clicks aimed at the next row while this row
           // is collapsed (opacity does not block hit-testing).
@@ -671,7 +689,10 @@ Column {
     readonly property string calendarId: calendar && calendar.id ? calendar.id : ""
     readonly property string sourceLabel: TaskModel.providerLabel(calendar ? calendar.provider : "", calendar ? calendar.host : "") + (calendar && calendar.readonly ? " · read-only" : "")
     readonly property string currentName: TaskModel.calendarDisplayName(calendar, {})
-    readonly property bool removable: TaskModel.canRemoveCalendar(calendar)
+    readonly property bool toggleable: TaskModel.canToggleCalendar(calendar)
+    // Absent/undefined enabled counts as enabled; only an explicit false
+    // dims the row and flips the button to "Enable".
+    readonly property bool calendarDisabled: calendar && calendar.enabled === false
 
     Rectangle {
       width: Style.space(22)
@@ -686,9 +707,10 @@ Column {
     Text {
       anchors.verticalCenter: parent.verticalCenter
       text: settingsCalendarRow.currentName
-      color: Color.foreground
+      color: settingsCalendarRow.calendarDisabled ? Color.muted : Color.foreground
       font.family: Style.font.family
       font.pixelSize: Style.font.body
+      textFormat: Text.PlainText
     }
 
     Text {
@@ -702,20 +724,22 @@ Column {
     }
 
     Item {
-      width: Math.max(Style.space(8), parent.width - Style.space(222) - sourceText.implicitWidth - (settingsCalendarRow.removable ? removeCalendarButton.implicitWidth : 0) - parent.spacing * (settingsCalendarRow.removable ? 4 : 3))
+      width: Math.max(Style.space(8), parent.width - Style.space(222) - sourceText.implicitWidth - (settingsCalendarRow.toggleable ? toggleCalendarButton.implicitWidth : 0) - parent.spacing * (settingsCalendarRow.toggleable ? 4 : 3))
       height: 1
     }
 
     Button {
-      id: removeCalendarButton
-      visible: settingsCalendarRow.removable
-      enabled: calendarService && !calendarService.pendingRemoveId
+      id: toggleCalendarButton
+      visible: settingsCalendarRow.toggleable
+      // Serialized service-wide: no row's button acts while any toggle is
+      // in flight; the pending row reads "Updating..." while it waits.
+      enabled: calendarService && !calendarService.pendingToggleId
       anchors.verticalCenter: parent.verticalCenter
-      text: calendarService && calendarService.pendingRemoveId === settingsCalendarRow.calendarId ? "Removing" : "Remove"
+      text: calendarService && calendarService.pendingToggleId === settingsCalendarRow.calendarId ? "Updating..." : settingsCalendarRow.calendarDisabled ? "Enable" : "Disable"
       bordered: true
       onClicked: {
-        debugLog("action: remove calendar " + settingsCalendarRow.calendarId)
-        if (calendarService) calendarService.removeCalendar(settingsCalendarRow.calendarId)
+        debugLog("action: " + (settingsCalendarRow.calendarDisabled ? "enable" : "disable") + " calendar " + settingsCalendarRow.calendarId)
+        if (calendarService) calendarService.setCalendarEnabled(settingsCalendarRow.calendarId, settingsCalendarRow.calendarDisabled)
       }
     }
   }
@@ -1071,6 +1095,119 @@ Column {
       textFormat: Text.PlainText
     }
 
+    // Enable/disable failure feedback, mirroring the connect form's error
+    // line; the service clears it on the next successful toggle.
+    Text {
+      readonly property string message: calendarService && calendarService.toggleError ? calendarService.toggleError : ""
+      visible: message !== ""
+      width: parent.width
+      text: message
+      color: Color.urgent
+      wrapMode: Text.WordWrap
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    // Connected servers summary: one display-only row per distinct
+    // plugin-managed CalDAV host, hidden until a server exists.
+    Column {
+      visible: tasksView.serverConnections.length > 0
+      width: parent.width
+      spacing: Style.space(4)
+
+      Text {
+        width: parent.width
+        text: "Servers"
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+        textFormat: Text.PlainText
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Color.accent
+      }
+
+      Repeater {
+        model: tasksView.serverConnections
+
+        Row {
+          id: serverRow
+          required property var modelData
+
+          width: parent ? parent.width : 0
+          spacing: Style.space(8)
+          height: Style.spacing.controlHeight
+
+          // Brand label for the host ("Fastmail"); falls back to the raw
+          // host if the provider map ever yields nothing.
+          readonly property string hostLabel: {
+            var label = TaskModel.providerLabel("caldav", serverRow.modelData ? serverRow.modelData.host : "")
+            return label !== "" ? label : String(serverRow.modelData && serverRow.modelData.host ? serverRow.modelData.host : "")
+          }
+          // The actual server address, always shown next to the brand label
+          // even when the brand was derived from the same host.
+          readonly property string hostAddress: serverRow.modelData && serverRow.modelData.host ? String(serverRow.modelData.host) : ""
+          readonly property string calendarsLabel: serverRow.modelData
+            ? String(serverRow.modelData.count) + (serverRow.modelData.count === 1 ? " calendar" : " calendars")
+            : ""
+
+          // The host column flexes to whatever width the brand and count
+          // labels leave and elides long addresses, so the row can never
+          // overflow the panel. Both neighbors are measured with TextMetrics
+          // so the width chain never reads a Text implicitWidth, which can
+          // defer or latch at 0 for delegates built while the config
+          // container is hidden (same reasoning as TaskItem).
+          TextMetrics {
+            id: serverBrandMetrics
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            text: serverRow.hostLabel
+          }
+
+          TextMetrics {
+            id: serverCountMetrics
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            text: serverRow.calendarsLabel
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: serverRow.hostLabel
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            textFormat: Text.PlainText
+          }
+
+          Text {
+            width: Math.max(0, serverRow.width - serverBrandMetrics.width - serverCountMetrics.width - serverRow.spacing * 2)
+            anchors.verticalCenter: parent.verticalCenter
+            text: serverRow.hostAddress
+            color: Color.muted
+            elide: Text.ElideRight
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: serverRow.calendarsLabel
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+          }
+        }
+      }
+    }
+
     Button {
       id: connectServerButton
       visible: !caldavForm.visible
@@ -1143,10 +1280,7 @@ Column {
           enabled: !calendarService || calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
             debugLog("action: caldav form cancel")
-            caldavUrlField.text = ""
-            caldavUsernameField.text = ""
-            caldavPasswordField.text = ""
-            caldavForm.visible = false
+            tasksView.closeCaldavForm()
           }
         }
       }
@@ -1179,6 +1313,14 @@ Column {
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         textFormat: Text.PlainText
+      }
+
+      // Let the success confirmation register briefly, then dismiss the form
+      // so the refreshed calendar list is visible again.
+      Timer {
+        id: caldavSuccessCloseTimer
+        interval: 1200
+        onTriggered: tasksView.closeCaldavForm()
       }
     }
 
@@ -1739,6 +1881,12 @@ Column {
 
     function onTaskDeleted(uid) {
       tasksView.now = new Date()
+    }
+
+    function onCaldavSetupStatusChanged() {
+      if (taskService && taskService.caldavSetupStatus === "success") {
+        caldavSuccessCloseTimer.restart()
+      }
     }
   }
 
