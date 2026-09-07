@@ -126,10 +126,11 @@ function parseHelperResponse(text) {
       provider: String(parsed.provider || ''),
       calendars: Array.isArray(parsed.calendars) ? parsed.calendars : [],
       tasks: normalizeTasks(rawTasks),
+      rev: typeof parsed.rev === 'number' ? parsed.rev : null,
       error: parsed.error || null
     }
   } catch (error) {
-    return { ok: false, provider: '', calendars: [], tasks: [], error: { code: 'invalid-json', message: String(error) } }
+    return { ok: false, provider: '', calendars: [], tasks: [], rev: null, error: { code: 'invalid-json', message: String(error) } }
   }
 }
 

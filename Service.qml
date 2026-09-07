@@ -32,6 +32,7 @@ Item {
   property int tasksGeneration: 0
   property int tasksLiveToken: 0
   property int tasksCacheToken: 0
+  property int tasksCacheRev: 0
   property bool tasksIgnoreCache: false
   property string tasksPendingCreateId: ""
   property var tasksPendingUpdateOriginal: null
@@ -218,7 +219,8 @@ Item {
     debugLog("writeCache - tasks: " + cachedTasks.length)
     tasksWriteCacheProc.secret = JSON.stringify({
       tasks: cachedTasks,
-      calendars: cachedCalendars
+      calendars: cachedCalendars,
+      rev: root.tasksCacheRev
     })
     tasksWriteCacheProc.command = [helperPath(), "tasks-save-cache", "--provider", provider]
     tasksWriteCacheProc.running = true
@@ -237,6 +239,7 @@ Item {
     var payload = TaskModel.parseHelperResponse(text)
     debugLog("finishListCache payload.ok: " + payload.ok + " tasks: " + (payload.tasks ? payload.tasks.length : 0))
     if (exitCode === 0 && payload.ok) {
+      if (typeof payload.rev === "number") root.tasksCacheRev = payload.rev
       applyTaskCache(payload.tasks, payload.calendars)
     }
   }
@@ -469,6 +472,7 @@ Item {
       var id = pendingRemoveId
       root.cachedCalendars = cachedCalendars.filter(function(cal) { return cal && cal.id !== id })
       root.calendars = root.cachedCalendars
+      root.cachedTasks = cachedTasks.filter(function(task) { return task && task.calendarId !== id })
       pendingRemoveId = ""
       removeError = ""
       listTasks(true)

@@ -2625,9 +2625,14 @@ def write_tasks_cache(payload: dict, bump: bool = False) -> None:
     path = tasks_cache_file()
     tmp = path.with_suffix(".json.tmp")
     disk = None if bump else read_tasks_cache()
-    if disk is not None and cache_rev(disk) > cache_rev(payload):
-        payload = dict(payload)
+    payload = dict(payload)
+    # A payload carrying a rev is a conditional write: a stale rev keeps disk
+    # tasks. A rev-less payload is an authoritative full replace that carries
+    # the disk rev forward so it never regresses.
+    if disk is not None and "rev" in payload and cache_rev(disk) > cache_rev(payload):
         payload["tasks"] = disk.get("tasks") or []
+        payload["rev"] = cache_rev(disk)
+    elif disk is not None and "rev" not in payload:
         payload["rev"] = cache_rev(disk)
     rev = cache_rev(payload)
     if bump:
@@ -2717,6 +2722,7 @@ def cached_tasks_snapshot(provider: str) -> dict:
         "tasks": bound_items(cache.get("tasks"), MAX_EVENTS),
         "cached": True,
         "cachedAt": cache.get("cachedAt") or "",
+        "rev": cache_rev(cache),
     }
 
 
@@ -2825,6 +2831,12 @@ def remove_calendar_from_cache(calendar_id: str) -> None:
     cache["calendars"] = [calendar for calendar in (cache.get("calendars") or []) if calendar.get("id") != calendar_id]
     cache["events"] = [event for event in (cache.get("events") or []) if event.get("calendarId") != calendar_id]
     write_cache(cache)
+    tasks = read_tasks_cache()
+    if tasks:
+        kept = [task for task in (tasks.get("tasks") or []) if (task or {}).get("calendarId") != calendar_id]
+        if len(kept) != len(tasks.get("tasks") or []):
+            tasks["tasks"] = kept
+            write_tasks_cache(tasks, bump=False)
 
 
 def eds_create_local_calendar(display_name: str) -> dict:
