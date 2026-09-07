@@ -514,6 +514,14 @@ Item {
     debugLog("action: setup-caldav finished: " + caldavSetupStatus)
   }
 
+  // Reset setup state after the UI has acknowledged a finished attempt so the
+  // next run of the connect form starts clean instead of replaying the old
+  // status message.
+  function resetCaldavSetup() {
+    caldavSetupStatus = "idle"
+    caldavSetupMessage = ""
+  }
+
   // ===== Task Processes =====
 
   Process {

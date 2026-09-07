@@ -44,6 +44,19 @@ Column {
     return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1")
   }
 
+  // Dismiss the connect-server form and drop any finished setup state so the
+  // next attempt starts clean. Password must never linger in the field.
+  function closeCaldavForm() {
+    caldavSuccessCloseTimer.stop()
+    caldavUrlField.text = ""
+    caldavUsernameField.text = ""
+    caldavPasswordField.text = ""
+    caldavForm.visible = false
+    if (calendarService && calendarService.caldavSetupStatus === "success") {
+      calendarService.resetCaldavSetup()
+    }
+  }
+
   // VTODO priority is the string "1"-"9" (1 = highest) or "" when unset.
   // Map to display wording; anything unparsable maps to "" so the field hides.
   function priorityLabel(value) {
@@ -1143,10 +1156,7 @@ Column {
           enabled: !calendarService || calendarService.caldavSetupStatus !== "connecting"
           onClicked: {
             debugLog("action: caldav form cancel")
-            caldavUrlField.text = ""
-            caldavUsernameField.text = ""
-            caldavPasswordField.text = ""
-            caldavForm.visible = false
+            tasksView.closeCaldavForm()
           }
         }
       }
@@ -1179,6 +1189,14 @@ Column {
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         textFormat: Text.PlainText
+      }
+
+      // Let the success confirmation register briefly, then dismiss the form
+      // so the refreshed calendar list is visible again.
+      Timer {
+        id: caldavSuccessCloseTimer
+        interval: 1200
+        onTriggered: tasksView.closeCaldavForm()
       }
     }
 
@@ -1739,6 +1757,12 @@ Column {
 
     function onTaskDeleted(uid) {
       tasksView.now = new Date()
+    }
+
+    function onCaldavSetupStatusChanged() {
+      if (taskService && taskService.caldavSetupStatus === "success") {
+        caldavSuccessCloseTimer.restart()
+      }
     }
   }
 
