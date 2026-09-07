@@ -178,7 +178,7 @@ Panel {
     open: root.opened
     centerOnBar: false
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(860))
+    contentWidth: panel.fittedContentWidth(Style.space(560))
     contentHeight: panel.fittedContentHeight(contentWrap.height)
 
     PanelKeyCatcher {
@@ -206,7 +206,7 @@ Panel {
 
           Column {
             id: calendarColumn
-            width: Math.min(parent.width, Style.space(820))
+            width: Math.min(parent.width, Style.space(520))
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(12)
 
