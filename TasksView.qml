@@ -1149,9 +1149,32 @@ Column {
             var label = TaskModel.providerLabel("caldav", serverRow.modelData ? serverRow.modelData.host : "")
             return label !== "" ? label : String(serverRow.modelData && serverRow.modelData.host ? serverRow.modelData.host : "")
           }
+          // The actual server address, always shown next to the brand label
+          // even when the brand was derived from the same host.
+          readonly property string hostAddress: serverRow.modelData && serverRow.modelData.host ? String(serverRow.modelData.host) : ""
           readonly property string calendarsLabel: serverRow.modelData
             ? String(serverRow.modelData.count) + (serverRow.modelData.count === 1 ? " calendar" : " calendars")
             : ""
+
+          // The host column flexes to whatever width the brand and count
+          // labels leave and elides long addresses, so the row can never
+          // overflow the panel. Both neighbors are measured with TextMetrics
+          // so the width chain never reads a Text implicitWidth, which can
+          // defer or latch at 0 for delegates built while the config
+          // container is hidden (same reasoning as TaskItem).
+          TextMetrics {
+            id: serverBrandMetrics
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            text: serverRow.hostLabel
+          }
+
+          TextMetrics {
+            id: serverCountMetrics
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            text: serverRow.calendarsLabel
+          }
 
           Text {
             anchors.verticalCenter: parent.verticalCenter
@@ -1159,6 +1182,17 @@ Column {
             color: Color.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.body
+            textFormat: Text.PlainText
+          }
+
+          Text {
+            width: Math.max(0, serverRow.width - serverBrandMetrics.width - serverCountMetrics.width - serverRow.spacing * 2)
+            anchors.verticalCenter: parent.verticalCenter
+            text: serverRow.hostAddress
+            color: Color.muted
+            elide: Text.ElideRight
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
             textFormat: Text.PlainText
           }
 
