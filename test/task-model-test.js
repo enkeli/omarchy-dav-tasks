@@ -127,6 +127,19 @@ const noTasksResponse = model.parseHelperResponse(JSON.stringify({ ok: true, pro
 assert.equal(noTasksResponse.tasks.length, 0)
 assert.equal(noTasksResponse.calendars.length, 0)
 
+const revResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'caldav', tasks: [], rev: 7 }))
+assert.equal(revResponse.ok, true)
+assert.equal(revResponse.rev, 7)
+
+const noRevResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'caldav', tasks: [] }))
+assert.equal(noRevResponse.rev, null)
+
+const badRevResponse = model.parseHelperResponse(JSON.stringify({ ok: true, tasks: [], rev: 'stale' }))
+assert.equal(badRevResponse.rev, null)
+
+const errorRevResponse = model.parseHelperResponse('{')
+assert.equal(errorRevResponse.rev, null)
+
 // formatDueDate
 assert.equal(model.formatDueDate(null), '')
 assert.equal(model.formatDueDate({}), '')

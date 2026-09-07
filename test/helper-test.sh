@@ -385,6 +385,54 @@ assert mod.ctag_decision(state, "cal", "abc", True) == "unchanged"
 assert mod.ctag_decision(state, "cal", "xyz", True) == "eds"
 print("ok - helper rfc6578 sync-collection parse")' "$ROOT/helper/omarchy-calendar-helper"
 
+python3 -c 'from importlib.machinery import SourceFileLoader; import json, os, sys, tempfile
+from pathlib import Path
+mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
+folder = Path(tempfile.mkdtemp())
+os.environ["OMARCHY_CALENDAR_CACHE"] = str(folder)
+
+def task_ids():
+    cache = mod.read_tasks_cache()
+    return [task["id"] for task in (cache or {}).get("tasks") or []]
+
+# rev-less payload is an authoritative full replace carrying the disk rev forward
+mod.write_tasks_cache({"ok": True, "provider": "caldav", "tasks": [{"id": "a", "calendarId": "cal-1"}, {"id": "b", "calendarId": "cal-2"}]})
+assert task_ids() == ["a", "b"]
+assert mod.cache_rev(mod.read_tasks_cache()) == 0
+mod.merge_cache_task({"id": "c", "calendarId": "cal-1", "title": "New"})
+assert mod.cache_rev(mod.read_tasks_cache()) == 1
+
+# payload with a rev equal to the disk rev replaces tasks
+mod.write_tasks_cache({"ok": True, "provider": "caldav", "rev": 1, "tasks": [{"id": "z", "calendarId": "cal-9"}]})
+assert task_ids() == ["z"]
+
+# payload with a LOWER rev than disk preserves disk tasks
+mod.write_tasks_cache({"ok": True, "provider": "caldav", "rev": 0, "tasks": [{"id": "stale", "calendarId": "cal-1"}]})
+assert task_ids() == ["z"]
+assert mod.cache_rev(mod.read_tasks_cache()) == 1
+
+# rev-less payload replaces tasks and preserves the disk rev
+mod.write_tasks_cache({"ok": True, "provider": "caldav", "tasks": [{"id": "fresh", "calendarId": "cal-3"}]})
+assert task_ids() == ["fresh"]
+assert mod.cache_rev(mod.read_tasks_cache()) == 1
+
+# removing a calendar prunes only that calendar tasks
+mod.write_tasks_cache({"ok": True, "provider": "caldav", "tasks": [
+    {"id": "keep", "calendarId": "cal-a"},
+    {"id": "gone", "calendarId": "cal-b"},
+    {"id": "also-gone", "calendarId": "cal-b"},
+]})
+assert mod.cache_rev(mod.read_tasks_cache()) == 1
+mod.write_cache({"ok": True, "calendars": [{"id": "cal-a"}, {"id": "cal-b"}], "events": []})
+mod.remove_calendar_from_cache("cal-b")
+assert task_ids() == ["keep"]
+# an unknown calendar id leaves the task cache untouched
+mod.remove_calendar_from_cache("cal-zzz")
+assert task_ids() == ["keep"]
+snapshot = mod.cached_tasks_snapshot("caldav")
+assert snapshot["ok"] is True and snapshot["rev"] == mod.cache_rev(mod.read_tasks_cache())
+print("ok - helper tasks cache rev guard and pruning")' "$ROOT/helper/omarchy-calendar-helper"
+
 python3 -c 'from importlib.machinery import SourceFileLoader; import sys
 from datetime import UTC, datetime, timedelta
 mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
