@@ -2,6 +2,8 @@
 
 A task widget for the Omarchy shell. Sync with Nextcloud Tasks and manage your to-do list from the bar.
 
+![Nextcloud Tasks widget](preview.png)
+
 ## Install
 
 ```bash
