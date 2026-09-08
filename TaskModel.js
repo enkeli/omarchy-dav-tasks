@@ -87,6 +87,21 @@ function upcomingTasks(tasks, maxCount) {
     .slice(0, limit)
 }
 
+// Uncapped counterpart of upcomingTasks: same filter+sort, no slice. The
+// tasks popup hands the full list to the view, which owns pagination.
+function allUpcomingTasks(tasks) {
+  var list = normalizeTasks(tasks)
+  var pending = list.filter(function(task) { return isPending(task) })
+  var withDue = pending.filter(function(task) { return !!task.due })
+  if (debugEnabled) console.log("[TaskModel] allUpcomingTasks: total:", list.length, "withDue:", withDue.length)
+  return withDue
+    .sort(function(a, b) {
+      var dueA = String(a.due || '')
+      var dueB = String(b.due || '')
+      return dueA.localeCompare(dueB)
+    })
+}
+
 // Totals for the section headers: same predicates/filters as the list
 // functions but uncapped, so counters report the full category even when the
 // visible list is sliced to a display limit.
@@ -130,6 +145,20 @@ function doneTasks(tasks, maxCount) {
     })
     .slice(0, limit)
   if (debugEnabled) console.log("[TaskModel] doneTasks: total:", list.length, "result:", result.length)
+  return result
+}
+
+// Uncapped counterpart of doneTasks: same filter+sort, no slice.
+function allDoneTasks(tasks) {
+  var list = normalizeTasks(tasks)
+  var result = list
+    .filter(function(task) { return isCompleted(task) })
+    .sort(function(a, b) {
+      var completedA = String(a.completed || '')
+      var completedB = String(b.completed || '')
+      return completedB.localeCompare(completedA)
+    })
+  if (debugEnabled) console.log("[TaskModel] allDoneTasks: total:", list.length, "result:", result.length)
   return result
 }
 
@@ -262,8 +291,10 @@ if (typeof module !== 'undefined') module.exports = {
   backlogTasks,
   backlogTaskCount,
   doneTasks,
+  allDoneTasks,
   doneTaskCount,
   upcomingTasks,
+  allUpcomingTasks,
   upcomingTaskCount,
   normalizeTasks,
   normalizedTask,

@@ -86,6 +86,18 @@ const upcomingCountInput = [
 assert.equal(model.upcomingTaskCount(upcomingCountInput), 6)
 assert.equal(model.upcomingTasks(upcomingCountInput, 5).length, 5)
 
+// allUpcomingTasks - full sorted upcoming list, no display cap
+assert.equal(model.allUpcomingTasks(null).length, 0)
+assert.equal(model.allUpcomingTasks(undefined).length, 0)
+assert.equal(model.allUpcomingTasks([]).length, 0)
+assert.equal(model.allUpcomingTasks(upcomingInput).length, 4)
+assert.equal(model.allUpcomingTasks(upcomingInput)[0].id, '1')
+const allUpcoming = model.allUpcomingTasks(upcomingCountInput)
+assert.equal(allUpcoming.length, 6)
+assert.equal(allUpcoming[0].id, '1')
+assert.equal(allUpcoming[5].id, '6')
+assert.equal(model.upcomingTasks(upcomingCountInput, 5).length, 5)
+
 // backlogTasks - pending tasks without due date, sorted by created desc
 const backlogInput = [
   { id: '1', title: 'A', status: 'NEEDS-ACTION', created: '2026-08-01T12:00:00Z' },
@@ -143,6 +155,18 @@ const doneCountInput = [
   { id: '12', title: 'T12', status: 'COMPLETED', completed: '2026-08-12' }
 ]
 assert.equal(model.doneTaskCount(doneCountInput), 12)
+assert.equal(model.doneTasks(doneCountInput).length, 10)
+
+// allDoneTasks - full sorted completed list, no display cap
+assert.equal(model.allDoneTasks(null).length, 0)
+assert.equal(model.allDoneTasks(undefined).length, 0)
+assert.equal(model.allDoneTasks([]).length, 0)
+assert.equal(model.allDoneTasks(doneInput).length, 3)
+assert.equal(model.allDoneTasks(doneInput)[0].id, '2')
+const allDone = model.allDoneTasks(doneCountInput)
+assert.equal(allDone.length, 12)
+assert.equal(allDone[0].id, '12')
+assert.equal(allDone[11].id, '1')
 assert.equal(model.doneTasks(doneCountInput).length, 10)
 
 // parseHelperResponse

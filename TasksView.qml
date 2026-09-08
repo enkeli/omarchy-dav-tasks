@@ -98,8 +98,22 @@ Column {
     property string emptyText: "No tasks"
     property string dateLabel: "due"
     property bool showOverdue: false
+    // Pagination: `tasks` carries the full uncapped list and the view owns
+    // slicing; the Repeater renders only the current page.
+    property int pageSize: 5
+    property int page: 1
+    readonly property int pageCount: Math.max(1, Math.ceil(tasks.length / pageSize))
+    // Clamped read-only view of `page`, so a shrunken list can never drive
+    // the slice or the pager label out of range.
+    readonly property int currentPage: Math.min(Math.max(page, 1), pageCount)
+    readonly property var pageTasks: tasks.slice((currentPage - 1) * pageSize, currentPage * pageSize)
     width: parent.width
     spacing: Style.space(4)
+
+    // Model rebuilds hand back a fresh array; that reference change snaps
+    // back to the first page, mirroring how delegate rebuilds reset
+    // TaskItem.expanded. Imperative write, so no binding loop.
+    onTasksChanged: taskSection.page = 1
 
     // Title row: bold accent label followed inline by the total count in
     // parentheses, muted and one step smaller. Always rendered so the
@@ -137,7 +151,7 @@ Column {
     }
 
     Repeater {
-      model: taskSection.tasks
+      model: taskSection.pageTasks
 
       TaskItem {
         required property var modelData
@@ -146,6 +160,74 @@ Column {
         task: modelData
         showOverdue: taskSection.showOverdue
         dateLabel: taskSection.dateLabel
+      }
+    }
+
+    // Pager: flat muted text row, centered, only when the section spans more
+    // than one page. Hovered arrows pick up the accent like the status
+    // circle; spent ends dim out the way disabled due-date cells do.
+    Row {
+      visible: taskSection.pageCount > 1
+      anchors.horizontalCenter: parent.horizontalCenter
+      spacing: Style.space(6)
+
+      Item {
+        width: Style.space(12)
+        height: pagerLabel.implicitHeight
+        enabled: taskSection.currentPage > 1
+
+        Text {
+          anchors.centerIn: parent
+          text: "‹"
+          color: !parent.enabled ? Util.alpha(Color.muted, 0.35)
+            : prevPageMouse.containsMouse ? Color.accent
+            : Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
+        }
+
+        MouseArea {
+          id: prevPageMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: taskSection.page = Math.max(1, taskSection.page - 1)
+        }
+      }
+
+      Text {
+        id: pagerLabel
+        text: taskSection.currentPage + " / " + taskSection.pageCount
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        textFormat: Text.PlainText
+      }
+
+      Item {
+        width: Style.space(12)
+        height: pagerLabel.implicitHeight
+        enabled: taskSection.currentPage < taskSection.pageCount
+
+        Text {
+          anchors.centerIn: parent
+          text: "›"
+          color: !parent.enabled ? Util.alpha(Color.muted, 0.35)
+            : nextPageMouse.containsMouse ? Color.accent
+            : Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
+        }
+
+        MouseArea {
+          id: nextPageMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: taskSection.page = Math.min(taskSection.pageCount, taskSection.page + 1)
+        }
       }
     }
 
@@ -1040,7 +1122,7 @@ Column {
     TaskSection {
       title: "Upcoming"
       count: TaskModel.upcomingTaskCount(tasksView.allTasks)
-      tasks: TaskModel.upcomingTasks(tasksView.allTasks, 5)
+      tasks: TaskModel.allUpcomingTasks(tasksView.allTasks)
       emptyText: "No upcoming tasks"
       dateLabel: "due"
       showOverdue: true
@@ -1065,7 +1147,7 @@ Column {
     TaskSection {
       title: "Completed"
       count: TaskModel.doneTaskCount(tasksView.allTasks)
-      tasks: TaskModel.doneTasks(tasksView.allTasks, 10)
+      tasks: TaskModel.allDoneTasks(tasksView.allTasks)
       emptyText: "No completed tasks"
       dateLabel: "completed"
       showOverdue: false
