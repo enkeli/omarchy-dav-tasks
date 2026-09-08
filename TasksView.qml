@@ -1189,6 +1189,9 @@ Column {
       title: "Completed"
       count: TaskModel.doneTaskCount(tasksView.allTasks)
       tasks: TaskModel.allDoneTasks(tasksView.allTasks)
+      // Roomier page: the done tab stacks one section, so 10 rows (~430px)
+      // still fits the fixed panel height where two 5-row sections do.
+      pageSize: 10
       emptyText: "No completed tasks"
       dateLabel: "completed"
       showOverdue: false
