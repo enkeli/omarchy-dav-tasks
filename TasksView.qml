@@ -93,19 +93,40 @@ Column {
     id: taskSection
     property string title: ""
     property var tasks: []
+    // Total tasks in this category (uncapped), shown next to the title.
+    property int count: 0
     property string emptyText: "No tasks"
     property string dateLabel: "due"
     property bool showOverdue: false
     width: parent.width
     spacing: Style.space(4)
 
-    Text {
+    // Title row: bold accent label on the left, total count muted on the
+    // right edge where the divider below runs out. Always rendered so the
+    // counter keeps a stable home as the underlying data changes.
+    Item {
       width: parent.width
-      text: taskSection.title
-      color: Color.accent
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      font.bold: true
+      height: taskSectionTitle.implicitHeight
+
+      Text {
+        id: taskSectionTitle
+        anchors.left: parent.left
+        text: taskSection.title
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
+
+      Text {
+        anchors.right: parent.right
+        anchors.baseline: taskSectionTitle.baseline
+        text: String(taskSection.count)
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        textFormat: Text.PlainText
+      }
     }
 
     Rectangle {
@@ -1017,6 +1038,7 @@ Column {
 
     TaskSection {
       title: "Upcoming"
+      count: TaskModel.upcomingTaskCount(tasksView.allTasks)
       tasks: TaskModel.upcomingTasks(tasksView.allTasks, 5)
       emptyText: "No upcoming tasks"
       dateLabel: "due"
@@ -1025,6 +1047,7 @@ Column {
 
     TaskSection {
       title: "Backlog"
+      count: TaskModel.backlogTaskCount(tasksView.allTasks)
       tasks: TaskModel.backlogTasks(tasksView.allTasks)
       emptyText: "No backlog tasks"
       dateLabel: "created"
@@ -1040,6 +1063,7 @@ Column {
 
     TaskSection {
       title: "Completed"
+      count: TaskModel.doneTaskCount(tasksView.allTasks)
       tasks: TaskModel.doneTasks(tasksView.allTasks, 10)
       emptyText: "No completed tasks"
       dateLabel: "completed"

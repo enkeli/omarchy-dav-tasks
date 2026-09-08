@@ -87,6 +87,17 @@ function upcomingTasks(tasks, maxCount) {
     .slice(0, limit)
 }
 
+// Totals for the section headers: same predicates/filters as the list
+// functions but uncapped, so counters report the full category even when the
+// visible list is sliced to a display limit.
+function upcomingTaskCount(tasks) {
+  var list = normalizeTasks(tasks)
+  var pending = list.filter(function(task) { return isPending(task) })
+  var withDue = pending.filter(function(task) { return !!task.due })
+  if (debugEnabled) console.log("[TaskModel] upcomingTaskCount: total:", list.length, "count:", withDue.length)
+  return withDue.length
+}
+
 function backlogTasks(tasks) {
   var list = normalizeTasks(tasks)
   var result = list
@@ -98,6 +109,13 @@ function backlogTasks(tasks) {
     })
   if (debugEnabled) console.log("[TaskModel] backlogTasks: total:", list.length, "result:", result.length)
   return result
+}
+
+function backlogTaskCount(tasks) {
+  var list = normalizeTasks(tasks)
+  var result = list.filter(function(task) { return isPending(task) && !task.due })
+  if (debugEnabled) console.log("[TaskModel] backlogTaskCount: total:", list.length, "count:", result.length)
+  return result.length
 }
 
 function doneTasks(tasks, maxCount) {
@@ -113,6 +131,13 @@ function doneTasks(tasks, maxCount) {
     .slice(0, limit)
   if (debugEnabled) console.log("[TaskModel] doneTasks: total:", list.length, "result:", result.length)
   return result
+}
+
+function doneTaskCount(tasks) {
+  var list = normalizeTasks(tasks)
+  var result = list.filter(function(task) { return isCompleted(task) })
+  if (debugEnabled) console.log("[TaskModel] doneTaskCount: total:", list.length, "count:", result.length)
+  return result.length
 }
 
 function parseHelperResponse(text) {
@@ -235,8 +260,11 @@ if (typeof module !== 'undefined') module.exports = {
   isOverdue,
   isPending,
   backlogTasks,
+  backlogTaskCount,
   doneTasks,
+  doneTaskCount,
   upcomingTasks,
+  upcomingTaskCount,
   normalizeTasks,
   normalizedTask,
   parseHelperResponse,
