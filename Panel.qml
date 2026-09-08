@@ -179,7 +179,12 @@ Panel {
     centerOnBar: false
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(560))
-    contentHeight: panel.fittedContentHeight(contentWrap.height)
+    // Fixed content height: the frame stays stable across tabs, pages, and
+    // expanded rows. 520 covers the pending tab's worst common case at the
+    // default scale (tab row + two sections x 5 rows + pagers ≈ 492);
+    // anything taller (expanded task details, config, the add form with its
+    // due picker) scrolls inside the Flickable below.
+    contentHeight: panel.fittedContentHeight(Style.space(520))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -190,6 +195,14 @@ Panel {
       blocked: tasksViewRoot.formEditing
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      // Keyboard scrolling for overflow (arrows / hjkl), one task row plus
+      // its spacing per press — same contract as the agents panel. No-op
+      // while the add form owns keys: `blocked` short-circuits this catcher.
+      onMoveRequested: function(dx, dy) {
+        if (dy === 0) return
+        var maxScroll = Math.max(0, calendarScroll.contentHeight - calendarScroll.height)
+        calendarScroll.contentY = Math.max(0, Math.min(calendarScroll.contentY + dy * Style.space(40), maxScroll))
+      }
 
       Flickable {
         id: calendarScroll
@@ -198,6 +211,12 @@ Panel {
         contentHeight: contentWrap.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        // Overflow affordances for the fixed-height frame: vertical-only
+        // flicking that engages only when content exceeds the viewport,
+        // with the shell's standard AsNeeded scrollbar.
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Item {
           id: contentWrap
@@ -294,6 +313,9 @@ Panel {
               panel: root
               viewMode: root.viewMode
               opened: root.opened
+              // Tabs swap whole content blocks; start each one at the top
+              // instead of inheriting the previous tab's scroll offset.
+              onActiveTabChanged: calendarScroll.contentY = 0
             }
           }
         }
