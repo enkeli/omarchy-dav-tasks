@@ -101,8 +101,8 @@ Column {
     width: parent.width
     spacing: Style.space(4)
 
-    // Title row: bold accent label on the left, total count muted on the
-    // right edge where the divider below runs out. Always rendered so the
+    // Title row: bold accent label followed inline by the total count in
+    // parentheses, muted and one step smaller. Always rendered so the
     // counter keeps a stable home as the underlying data changes.
     Item {
       width: parent.width
@@ -119,9 +119,10 @@ Column {
       }
 
       Text {
-        anchors.right: parent.right
+        anchors.left: taskSectionTitle.right
+        anchors.leftMargin: Style.space(4)
         anchors.baseline: taskSectionTitle.baseline
-        text: String(taskSection.count)
+        text: "(" + taskSection.count + ")"
         color: Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
