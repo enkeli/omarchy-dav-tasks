@@ -107,16 +107,25 @@ Column {
     // the slice or the pager label out of range.
     readonly property int currentPage: Math.min(Math.max(page, 1), pageCount)
     readonly property var pageTasks: tasks.slice((currentPage - 1) * pageSize, currentPage * pageSize)
-    // Fixed-slot reservation: a populated section reserves a full page —
-    // pageSize rows plus the pager slot — so a short Upcoming list never
-    // pulls Backlog up when task counts fluctuate. Every term is measured
-    // from live instances (title Text, hidden prototype row, pager label),
-    // so the reserve re-derives when the font or spacing scale changes
-    // instead of baking in pixel constants.
-    readonly property real reserveHeight: taskSectionTitle.implicitHeight
-      + Style.space(4) + 1 + Style.space(4)
-      + pageSize * reserveRow.height + (pageSize - 1) * Style.space(4)
-      + Style.space(4) + pagerLabel.implicitHeight
+    // Exactly pageSize slots whenever the section is populated: real tasks
+    // for the first pageTasks.length entries, null fillers after. The
+    // Repeater therefore always lays out a full page, so a short list can
+    // never shrink the section and pull the next one up. Section height
+    // falls out of the Column's natural layout — no height overrides and no
+    // cross-item measurements that could defer or latch.
+    readonly property var pageSlots: {
+      if (tasks.length === 0) return []
+      var slots = []
+      var shown = pageTasks.length
+      for (var i = 0; i < pageSize; i++) slots.push(i < shown ? pageTasks[i] : null)
+      return slots
+    }
+    // Canonical stand-in for filler slots. It mirrors a real collapsed row's
+    // structure — calendar meta line shown, like every normalized task — so
+    // placeholder height matches real row height exactly (layout
+    // replication, not measurement). TaskItem blanks and disables the
+    // stand-in via its `inert` flag.
+    readonly property var placeholderStandIn: ({ id: "", title: "", calendarName: "Calendar", status: "NEEDS-ACTION" })
     width: parent.width
     spacing: Style.space(4)
 
@@ -124,26 +133,6 @@ Column {
     // back to the first page, mirroring how delegate rebuilds reset
     // TaskItem.expanded. Imperative write, so no binding loop.
     onTasksChanged: taskSection.page = 1
-
-    // Grow-don't-clip floor: populated sections hold the reserve and grow
-    // past it when an expanded detail block needs more room (the panel's
-    // Flickable scrolls the overflow — nothing clips). Empty sections stay
-    // compact: reserving the full block would bury the next section behind
-    // dead space in the fixed-height panel, so the one shift that remains
-    // is the empty → first-task transition.
-    height: tasks.length > 0 ? Math.max(reserveHeight, implicitHeight) : implicitHeight
-
-    // Hidden measurement row for the reserve: a representative collapsed
-    // TaskItem with the calendar meta row shown (every normalized task has
-    // one). Visible false keeps it out of the Column's layout — it is only
-    // measured.
-    TaskItem {
-      id: reserveRow
-      visible: false
-      width: taskSection.width
-      task: ({ id: "section-reserve-row", title: "Reserve row", calendarName: "Calendar", status: "NEEDS-ACTION" })
-      dateLabel: taskSection.dateLabel
-    }
 
     // Title row: bold accent label followed inline by the total count in
     // parentheses, muted and one step smaller. Always rendered so the
@@ -181,23 +170,34 @@ Column {
     }
 
     Repeater {
-      model: taskSection.pageTasks
+      model: taskSection.pageSlots
 
       TaskItem {
         required property var modelData
         required property int index
+        readonly property bool placeholder: !modelData
         width: taskSection.width
-        task: modelData
+        // Filler slots (modelData null) render the stand-in so the row's
+        // internal layout matches real rows exactly; `inert` blanks and
+        // disables everything the stand-in would otherwise paint.
+        task: modelData || taskSection.placeholderStandIn
+        inert: placeholder
         showOverdue: taskSection.showOverdue
         dateLabel: taskSection.dateLabel
       }
     }
 
-    // Pager: flat muted text row, centered, only when the section spans more
-    // than one page. Hovered arrows pick up the accent like the status
-    // circle; spent ends dim out the way disabled due-date cells do.
+    // Pager: flat muted text row, centered. It occupies its slot in every
+    // populated section so the 5↔6 boundary — where the pager first
+    // appears — never shifts the layout either: with a single page it
+    // renders as a same-height blank spacer (opacity 0; both arrows are
+    // disabled because currentPage equals pageCount). Hovered arrows pick
+    // up the accent like the status circle; spent ends dim out the way
+    // disabled due-date cells do. Hidden entirely on empty sections, which
+    // stay compact.
     Row {
-      visible: taskSection.pageCount > 1
+      visible: taskSection.tasks.length > 0
+      opacity: taskSection.pageCount > 1 ? 1 : 0
       anchors.horizontalCenter: parent.horizontalCenter
       spacing: Style.space(6)
 
@@ -284,6 +284,11 @@ Column {
     // Two-step delete confirmation: armed by the footer button's first click,
     // fired by the second, disarmed by timeout, collapse, or model rebuild.
     property bool deleteArmed: false
+    // Page-slot filler row: rendered from the section's stand-in object so
+    // its geometry matches real rows exactly, with all content blanked and
+    // every interaction disabled (no hover fill, no click targets, no
+    // cursor change).
+    property bool inert: false
 
     // Case-insensitive completed check: the Done tab filters with
     // TaskModel.isCompleted, so icon/strikethrough must use the same
@@ -406,7 +411,7 @@ Column {
     // owns the hover grab there; OR it in to keep the row highlighted while
     // the cursor is on the glyph. Expanded rows hold the fill so the open
     // card reads as active even without the cursor over it.
-    color: taskItem.expanded || taskItemMouse.containsMouse || statusCompleteMouse.containsMouse
+    color: !taskItem.inert && (taskItem.expanded || taskItemMouse.containsMouse || statusCompleteMouse.containsMouse)
       ? Style.hoverFillFor(Color.foreground, Color.accent)
       : "transparent"
 
@@ -430,10 +435,14 @@ Column {
       anchors.top: parent.top
       anchors.topMargin: Style.space(3)
       spacing: Style.space(6)
+      // Filler rows blank their content; geometry — and therefore the row
+      // height the page slot relies on — stays identical to real rows.
+      opacity: taskItem.inert ? 0 : 1
 
       Text {
         id: statusIcon
         anchors.verticalCenter: parent.verticalCenter
+        visible: !taskItem.inert
         text: taskItem.completed ? "\u2713" : "\u25CB"
         // Completed rows keep the static muted check; pending rows light up
         // accent while the cursor is on the click target to hint "click me".
@@ -561,6 +570,8 @@ Column {
       id: taskItemMouse
       anchors.fill: parent
       hoverEnabled: true
+      // Filler rows are dead space: no expansion, no hover, no cursor.
+      enabled: !taskItem.inert
       cursorShape: Qt.PointingHandCursor
       onClicked: {
         if (!taskItem.task) return
@@ -750,7 +761,7 @@ Column {
       width: Style.space(18)
       height: Style.space(18)
       hoverEnabled: true
-      enabled: taskItem.task && !taskItem.completed
+      enabled: taskItem.task && !taskItem.completed && !taskItem.inert
       cursorShape: Qt.PointingHandCursor
       onClicked: {
         if (!tasksView.taskService || !taskItem.task) return
