@@ -107,6 +107,16 @@ Column {
     // the slice or the pager label out of range.
     readonly property int currentPage: Math.min(Math.max(page, 1), pageCount)
     readonly property var pageTasks: tasks.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    // Fixed-slot reservation: a populated section reserves a full page —
+    // pageSize rows plus the pager slot — so a short Upcoming list never
+    // pulls Backlog up when task counts fluctuate. Every term is measured
+    // from live instances (title Text, hidden prototype row, pager label),
+    // so the reserve re-derives when the font or spacing scale changes
+    // instead of baking in pixel constants.
+    readonly property real reserveHeight: taskSectionTitle.implicitHeight
+      + Style.space(4) + 1 + Style.space(4)
+      + pageSize * reserveRow.height + (pageSize - 1) * Style.space(4)
+      + Style.space(4) + pagerLabel.implicitHeight
     width: parent.width
     spacing: Style.space(4)
 
@@ -114,6 +124,26 @@ Column {
     // back to the first page, mirroring how delegate rebuilds reset
     // TaskItem.expanded. Imperative write, so no binding loop.
     onTasksChanged: taskSection.page = 1
+
+    // Grow-don't-clip floor: populated sections hold the reserve and grow
+    // past it when an expanded detail block needs more room (the panel's
+    // Flickable scrolls the overflow — nothing clips). Empty sections stay
+    // compact: reserving the full block would bury the next section behind
+    // dead space in the fixed-height panel, so the one shift that remains
+    // is the empty → first-task transition.
+    height: tasks.length > 0 ? Math.max(reserveHeight, implicitHeight) : implicitHeight
+
+    // Hidden measurement row for the reserve: a representative collapsed
+    // TaskItem with the calendar meta row shown (every normalized task has
+    // one). Visible false keeps it out of the Column's layout — it is only
+    // measured.
+    TaskItem {
+      id: reserveRow
+      visible: false
+      width: taskSection.width
+      task: ({ id: "section-reserve-row", title: "Reserve row", calendarName: "Calendar", status: "NEEDS-ACTION" })
+      dateLabel: taskSection.dateLabel
+    }
 
     // Title row: bold accent label followed inline by the total count in
     // parentheses, muted and one step smaller. Always rendered so the

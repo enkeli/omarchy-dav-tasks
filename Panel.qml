@@ -180,11 +180,12 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(560))
     // Fixed content height: the frame stays stable across tabs, pages, and
-    // expanded rows. 560 covers the pending tab's worst common case at the
-    // default scale (tab row + two sections x 5 rows + pagers ≈ 492) with
-    // headroom, matching the panel width cap; anything taller (expanded task
-    // details, config, the add form with its due picker) scrolls inside the
-    // Flickable below.
+    // expanded rows. 560 fits the pending tab's worst common case at the
+    // default scale — tab row + two sections, each reserving a full page of
+    // 5 rows plus the pager slot (≈ 524, every term measured from live
+    // instances in TaskSection) — with headroom, matching the panel width
+    // cap; anything taller (expanded task details, config, the add form
+    // with its due picker) scrolls inside the Flickable below.
     contentHeight: panel.fittedContentHeight(Style.space(560))
 
     PanelKeyCatcher {
