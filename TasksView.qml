@@ -838,15 +838,98 @@ Column {
     // Absent/undefined enabled counts as enabled; only an explicit false
     // dims the row and flips the button to "Enable".
     readonly property bool calendarDisabled: calendar && calendar.enabled === false
+    // Resolved dot color: color override -> provider color -> stable palette slot.
+    readonly property string currentColor: TaskModel.calendarDisplayColor(calendar, {}, calendarIndex)
+    // A color write is in flight for this row / anywhere in the service.
+    readonly property bool colorPending: calendarService && calendarService.pendingColorId === calendarId
+    readonly property bool colorBusy: calendarService && calendarService.pendingColorId !== ""
+    // Non-toggleable calendars stay display-only dots; also serialized like
+    // the toggle button: no pick starts while any color write is in flight.
+    readonly property bool pickable: toggleable && !colorBusy
 
     Rectangle {
       width: Style.space(22)
       height: Style.space(22)
       radius: width / 2
       anchors.verticalCenter: parent.verticalCenter
-      color: calendar && calendar.color ? calendar.color : Color.accent
+      color: settingsCalendarRow.currentColor || Color.accent
       border.width: 1
-      border.color: Util.alpha(Color.foreground, 0.35)
+      // Hover brightens the ring so the dot reads as a clickable control.
+      border.color: swatchMouse.enabled && swatchMouse.hovered ? Color.foreground : Util.alpha(Color.foreground, 0.35)
+      // Quiet busy cue while this row's color write is in flight.
+      opacity: settingsCalendarRow.colorPending ? 0.55 : 1.0
+
+      MouseArea {
+        id: swatchMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        enabled: settingsCalendarRow.pickable
+        onClicked: colorPopup.open()
+      }
+
+      Popup {
+        id: colorPopup
+        padding: Style.space(6)
+        modal: false
+        dim: false
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        // Below the swatch by default; flip above when the row sits near the
+        // bottom of the panel so the palette never opens off-surface.
+        onAboutToShow: {
+          var gap = Style.space(4)
+          var need = implicitHeight + gap
+          var sceneY = settingsCalendarRow.mapToItem(null, 0, 0).y
+          var winHeight = tasksView.Window.window ? tasksView.Window.window.height : 0
+          y = winHeight - sceneY < need + parent.height + Style.space(12) ? -need : parent.height + gap
+        }
+
+        background: Rectangle {
+          color: Color.popups.background
+          border.color: Color.accent
+          border.width: 1
+          radius: Style.cornerRadius
+        }
+
+        contentItem: Flow {
+          spacing: Style.space(6)
+
+          Repeater {
+            model: TaskModel.DEFAULT_CALENDAR_COLORS
+
+            Rectangle {
+              required property var modelData
+              width: Style.space(16)
+              height: Style.space(16)
+              radius: width / 2
+              color: modelData
+              border.width: TaskModel.colorsMatch(modelData, settingsCalendarRow.currentColor) ? 2 : 1
+              border.color: TaskModel.colorsMatch(modelData, settingsCalendarRow.currentColor) ? Color.foreground : Util.alpha(Color.foreground, 0.35)
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                // Serialized: ignore picks while any color write is in flight.
+                enabled: !settingsCalendarRow.colorBusy
+                onClicked: {
+                  if (calendarService) calendarService.setCalendarColor(settingsCalendarRow.calendarId, parent.modelData)
+                  colorPopup.close()
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Panel hide must not leave the palette logically open, or the next
+      // open would surface a stale popup over the config tab.
+      Connections {
+        target: tasksView
+        function onOpenedChanged() {
+          if (!tasksView.opened && colorPopup.opened) colorPopup.close()
+        }
+      }
     }
 
     Text {
@@ -1250,6 +1333,20 @@ Column {
     // line; the service clears it on the next successful toggle.
     Text {
       readonly property string message: calendarService && calendarService.toggleError ? calendarService.toggleError : ""
+      visible: message !== ""
+      width: parent.width
+      text: message
+      color: Color.urgent
+      wrapMode: Text.WordWrap
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    // Color-pick failure feedback, same line style as the toggle error; the
+    // service clears it on the next pick attempt.
+    Text {
+      readonly property string message: calendarService && calendarService.colorError ? calendarService.colorError : ""
       visible: message !== ""
       width: parent.width
       text: message

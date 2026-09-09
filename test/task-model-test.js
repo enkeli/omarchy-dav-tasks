@@ -263,4 +263,22 @@ assert.equal(model.formatCompletedDate({ completed: 'bad-date' }), '')
 assert.equal(model.formatCompletedDate({ completed: '2026-08-18T12:00:00Z' }), 'Aug 18')
 assert.equal(model.formatCompletedDate({ completed: '2025-06-01T12:00:00Z' }), 'Jun 1, 2025')
 
+// colorsMatch - case-insensitive, non-empty comparison of two color strings
+assert.equal(model.colorsMatch('#8AADF4', '#8aadf4'), true)
+assert.equal(model.colorsMatch('', '#fff'), false)
+assert.equal(model.colorsMatch('#fff', ''), false)
+assert.equal(model.colorsMatch(undefined, undefined), false)
+assert.equal(model.colorsMatch('#a6e3a1', '#a6e3a1'), true)
+assert.equal(model.colorsMatch(' #a6e3a1 ', '#a6e3a1'), true)
+assert.equal(model.colorsMatch('#8aadf4', '#a6e3a1'), false)
+
+// calendarDisplayColor - settings override beats calendar.color beats palette
+assert.equal(model.calendarDisplayColor({ id: 'c1', color: '#111111' }, { c1: '#222222' }), '#222222')
+assert.equal(model.calendarDisplayColor({ id: 'c1', color: '#111111' }, {}), '#111111')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, 0), '#8aadf4')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, 3), '#f38ba8')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, 12), '#f9e2af')
+assert.equal(model.calendarDisplayColor(null, {}, 5), '#8aadf4')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, -1), '#a6e3a1')
+
 console.log('ok - task model')

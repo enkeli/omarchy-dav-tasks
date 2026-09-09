@@ -279,6 +279,14 @@ function calendarDisplayColor(calendar, colors, index) {
   return DEFAULT_CALENDAR_COLORS[Math.abs(index || 0) % DEFAULT_CALENDAR_COLORS.length]
 }
 
+function colorsMatch(a, b) {
+  var norm = function(v) { return String(v || '').trim().toLowerCase() }
+  var left = norm(a)
+  var right = norm(b)
+  if (!left || !right) return false
+  return left === right
+}
+
 function calendarChoiceLabel(calendar, names) {
   if (!calendar) return 'Calendar'
   return calendarDisplayName(calendar, names) + ' · ' + providerLabel(calendar.provider, calendar.host)
@@ -306,6 +314,7 @@ if (typeof module !== 'undefined') module.exports = {
   providerLabel,
   calendarDisplayName,
   calendarDisplayColor,
+  colorsMatch,
   calendarChoiceLabel,
   DEFAULT_CALENDAR_COLORS
 }
