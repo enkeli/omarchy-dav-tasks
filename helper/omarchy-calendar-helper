@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,8 @@ MAX_CACHE_BYTES = 8 * 1024 * 1024
 MAX_REMINDER_BYTES = 256 * 1024
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
+MAX_HTTP_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_SYNC_LOG_BYTES = 5 * 1024 * 1024
 MAX_EVENTS = 8000
 MAX_CALENDARS = 200
 MAX_FIRED = 2000
@@ -1307,6 +1310,7 @@ def create_task_caldav(calendar_id: str, title: str, due: datetime | None, descr
         password,
         document.encode("utf-8"),
         {"Content-Type": "text/calendar; charset=utf-8"},
+        base_url=href,
     )
     if status_code not in (200, 201, 204):
         detail = caldav_error_detail(body)
@@ -1324,7 +1328,7 @@ def update_task_caldav(calendar_id: str, uid: str, title: str, due: datetime | N
         raise ValueError("update-task requires --uid.")
     modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
     resource = caldav_task_resource(href, uid)
-    status_code, raw, _headers = caldav_http("GET", resource, username, password, b"", {})
+    status_code, raw, _headers = caldav_http("GET", resource, username, password, b"", {}, base_url=href)
     if status_code != 200 or not raw:
         raise ValueError(f"Task not found: {uid} (status {status_code}).")
     document = caldav_vtodo_updated_document(raw.decode("utf-8", "replace"), title, due, description, priority, status, percent, dtstart)
@@ -1335,6 +1339,7 @@ def update_task_caldav(calendar_id: str, uid: str, title: str, due: datetime | N
         password,
         document.encode("utf-8"),
         {"Content-Type": "text/calendar; charset=utf-8"},
+        base_url=href,
     )
     if status_code not in (200, 201, 204):
         detail = caldav_error_detail(body)
@@ -1351,7 +1356,7 @@ def delete_task_caldav(calendar_id: str, uid: str) -> dict:
         raise ValueError("delete-task requires --uid.")
     modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
     resource = caldav_task_resource(href, uid)
-    status_code, body, _headers = caldav_http("DELETE", resource, username, password, b"", {})
+    status_code, body, _headers = caldav_http("DELETE", resource, username, password, b"", {}, base_url=href)
     if status_code not in (200, 204):
         detail = caldav_error_detail(body)
         sync_log("task-delete-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
@@ -1463,6 +1468,51 @@ def caldav_hostname(url: str) -> str:
     return (urlsplit(url).hostname or "").lower().rstrip(".")
 
 
+def caldav_origin(url: str) -> tuple[str, str, int]:
+    """Parse an http(s) URL into its (scheme, host, effective port) origin.
+
+    Rejects anything that is not a plain http(s) URL (file:, ftp:, relative
+    references) and any netloc carrying embedded credentials, so server
+    supplied hrefs can never be turned into a fetch of the wrong scheme or
+    origin.
+    """
+    parsed = urlsplit(str(url or "").strip())
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Refused a calendar URL with a non-http(s) scheme: {parsed.scheme or '(none)'}")
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if not host:
+        raise ValueError("Refused a calendar URL without a host.")
+    if "@" in (parsed.netloc or ""):
+        raise ValueError("Refused a calendar URL with embedded credentials.")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("Refused a calendar URL with an invalid port.") from error
+    return scheme, host, port or (443 if scheme == "https" else 80)
+
+
+def caldav_origin_text(url: str) -> str:
+    """Canonical origin string used to scope stored credentials to one server."""
+    scheme, host, port = caldav_origin(url)
+    default_port = 443 if scheme == "https" else 80
+    return f"{scheme}://{host}" if port == default_port else f"{scheme}://{host}:{port}"
+
+
+def validated_url(raw_url: str, base_url: str) -> str:
+    """Validate a fetch URL against the configured base URL's origin.
+
+    The CalDAV server's responses are untrusted: every URL that is about to
+    be fetched (item hrefs, principal/calendar-home-set hrefs, redirect
+    targets) must be http(s) and live on the same origin as the configured
+    server. Returns the URL only when it is safe to fetch.
+    """
+    target = str(raw_url or "").strip()
+    if caldav_origin(target) != caldav_origin(base_url):
+        raise ValueError("Refused to fetch a calendar URL from a different server.")
+    return target
+
+
 def is_forwardemail_host(host: str) -> bool:
     return host == "caldav.forwardemail.net" or host.endswith(".forwardemail.net")
 
@@ -1510,21 +1560,63 @@ def parse_caldav_multistatus(xml_bytes: bytes, base_url: str) -> tuple[list[dict
     return calendars, homes, principals
 
 
-def caldav_propfind(url: str, username: str, password: str, timeout: float = 8.0) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, data=PROPFIND_BODY, method="PROPFIND")
+def _read_limited(response, max_bytes: int = MAX_HTTP_RESPONSE_BYTES) -> bytes:
+    """Read an HTTP response body in bounded chunks, refusing oversized bodies."""
+    try:
+        length = int(response.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        length = 0
+    if length > max_bytes:
+        raise ValueError("Calendar server response was too large.")
+    chunks = []
+    total = 0
+    while True:
+        chunk = response.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("Calendar server response was too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+class CaldavRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects that leave the configured server's origin or scheme."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        base = getattr(req, "omarchy_base_origin", "")
+        try:
+            if base:
+                validated_url(newurl, base)
+            else:
+                caldav_origin(newurl)
+        except ValueError as error:
+            sync_log("sync-redirect-refused", url=str(newurl)[:160], error=str(error)[:200])
+            raise urllib.error.HTTPError(newurl, code, f"refused redirect: {error}", headers, fp) from error
+        request = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if request is not None:
+            request.omarchy_base_origin = base
+        return request
+
+
+def caldav_propfind(url: str, username: str, password: str, timeout: float = 8.0, *, base_url: str) -> tuple[int, bytes]:
+    fetch_url = validated_url(url, base_url)
+    request = urllib.request.Request(fetch_url, data=PROPFIND_BODY, method="PROPFIND")
     request.add_header("Depth", "1")
     request.add_header("Content-Type", "application/xml; charset=utf-8")
     request.add_header("User-Agent", "omarchy-dav-tasks/1.0")
     manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    parsed = urlsplit(url)
-    origin = f"{parsed.scheme}://{parsed.netloc}"
-    manager.add_password(None, origin, username, password)
-    opener = urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(manager))
+    # Credentials are scoped to the configured server's origin only: a redirect
+    # or a hostile href on another origin never receives them.
+    manager.add_password(None, caldav_origin_text(base_url), username, password)
+    opener = urllib.request.build_opener(CaldavRedirectHandler(), urllib.request.HTTPBasicAuthHandler(manager))
+    request.omarchy_base_origin = caldav_origin_text(base_url)
     try:
         with opener.open(request, timeout=timeout) as response:
-            return int(getattr(response, "status", 200) or 200), response.read()
+            return int(getattr(response, "status", 200) or 200), _read_limited(response)
     except urllib.error.HTTPError as error:
-        return int(error.code), error.read() if error.fp else b""
+        return int(error.code), _read_limited(error) if error.fp else b""
     except TimeoutError as error:
         raise ValueError("Calendar server timed out.") from error
     except urllib.error.URLError as error:
@@ -1536,11 +1628,11 @@ def discover_caldav_calendars(url: str, username: str, password: str) -> list[di
     seen: set[str] = set()
     found: list[dict] = []
     while pending and len(seen) < 4:
-        current = pending.pop(0)
+        current = validated_url(pending.pop(0), url)
         if current in seen:
             continue
         seen.add(current)
-        status, body = caldav_propfind(current, username, password)
+        status, body = caldav_propfind(current, username, password, base_url=url)
         if status in (401, 403):
             raise ValueError("Username or password was rejected.")
         if status not in (200, 207) or not body:
@@ -1657,8 +1749,17 @@ def eds_setup_caldav(payload: dict) -> dict:
         raise ValueError("CalDAV URL must include http(s) scheme and host.")
     if any(character.isspace() for character in parsed.hostname):
         raise ValueError("CalDAV URL host cannot contain spaces.")
+    if "@" in (parsed.netloc or ""):
+        raise ValueError("URL must not contain embedded credentials; enter username and password separately.")
+    warning = ""
+    if parsed.scheme == "http":
+        warning = "connection is not encrypted; use https:// if the server supports it"
+        sync_log("setup-caldav-insecure", scheme="http", host=caldav_hostname(url))
     if is_forwardemail_host(caldav_hostname(url)):
-        return eds_setup_caldav_propfind(display_name, url, username, password)
+        result = eds_setup_caldav_propfind(display_name, url, username, password)
+        if warning:
+            result["warning"] = warning
+        return result
 
     modules = load_eds_modules()
     registry = modules.EDataServer.SourceRegistry.new_sync(None)
@@ -1726,12 +1827,15 @@ def eds_setup_caldav(payload: dict) -> dict:
             discard_committed_source(registry, created.get_uid())
         raise
 
-    return {
+    result = {
         "ok": True,
         "provider": "evolution-data-server",
         "calendar": source_calendar(source, registry, modules),
         "calendars": calendars,
     }
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 SYNC_REPORT_BODY = """<?xml version="1.0" encoding="utf-8"?>
@@ -1777,21 +1881,24 @@ def lookup_source_credentials(source, registry, modules: EdsModules) -> tuple[st
     return str(username), str(password)
 
 
-def caldav_http(method: str, url: str, username: str, password: str, body: bytes = b"", headers: dict | None = None, timeout: float = 25.0) -> tuple[int, bytes, object]:
-    request = urllib.request.Request(url, data=body or None, method=method)
+def caldav_http(method: str, url: str, username: str, password: str, body: bytes = b"", headers: dict | None = None, timeout: float = 25.0, *, base_url: str) -> tuple[int, bytes, object]:
+    fetch_url = validated_url(url, base_url)
+    request = urllib.request.Request(fetch_url, data=body or None, method=method)
     request.add_header("User-Agent", "omarchy-dav-tasks/1.0")
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    parsed = urlsplit(url)
-    origin = f"{parsed.scheme}://{parsed.netloc}"
-    manager.add_password(None, origin, username, password)
-    opener = urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(manager))
+    # Credentials are scoped to the configured server's origin only: a redirect
+    # or a hostile href on another origin never receives them.
+    manager.add_password(None, caldav_origin_text(base_url), username, password)
+    opener = urllib.request.build_opener(CaldavRedirectHandler(), urllib.request.HTTPBasicAuthHandler(manager))
+    request.omarchy_base_origin = caldav_origin_text(base_url)
+    parsed = urlsplit(fetch_url)
     try:
         with opener.open(request, timeout=timeout) as response:
-            return int(getattr(response, "status", 200) or 200), response.read(), response.headers
+            return int(getattr(response, "status", 200) or 200), _read_limited(response), response.headers
     except urllib.error.HTTPError as error:
-        return int(error.code), error.read() if error.fp else b"", error.headers
+        return int(error.code), _read_limited(error) if error.fp else b"", error.headers
     except Exception as error:
         sync_log("sync-http-error", method=method, host=parsed.hostname or "", error=str(error)[:200])
         return 0, b"", None
@@ -1971,13 +2078,22 @@ def ics_missing_vevent(ics_text: str) -> bool:
     return "BEGIN:VEVENT" not in str(ics_text or "").upper()
 
 
-def ingest_changed_items(changed: list, calendar: dict, client, modules: EdsModules, window_start: datetime, window_end: datetime, username: str, password: str) -> tuple[list, list]:
+def ingest_changed_items(changed: list, calendar: dict, client, modules: EdsModules, window_start: datetime, window_end: datetime, username: str, password: str, base_url: str) -> tuple[list, list]:
     new_events = []
     failed_uids = []
     for item in changed:
         ics = item.get("ics") or ""
         if ics_missing_vevent(ics) and item.get("href"):
-            _status, raw, _hdrs = caldav_http("GET", item["href"], username, password, b"", {})
+            # Server-supplied hrefs are untrusted: refuse anything that leaves
+            # the configured origin (or uses another scheme) before fetching.
+            try:
+                fetch_url = validated_url(str(item["href"] or ""), base_url)
+            except ValueError as error:
+                sync_log("sync-ics-refused", href=str(item.get("href") or "")[:160], error=str(error)[:200])
+                if item.get("uid"):
+                    failed_uids.append(str(item["uid"]))
+                continue
+            _status, raw, _hdrs = caldav_http("GET", fetch_url, username, password, b"", {}, base_url=base_url)
             if _status == 200:
                 ics = raw.decode("utf-8", "replace")
             else:
@@ -2036,7 +2152,7 @@ def ctag_decision(state: dict, calendar_id: str, ctag: str, if_changed: bool) ->
 
 def apply_collection_report(href: str, username: str, password: str, token: str, calendar: dict, client, source, modules: EdsModules, window_start: datetime, window_end: datetime, cache: dict | None, state: dict, calendar_id: str, ctag: str, cached_events: list, if_changed: bool, replace: bool = False) -> tuple[str, list, list]:
     body = SYNC_REPORT_BODY.format(token=token.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")).encode("utf-8")
-    status, payload, _headers = caldav_http("REPORT", href, username, password, body, {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"})
+    status, payload, _headers = caldav_http("REPORT", href, username, password, body, {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"}, base_url=href)
     if status in (403, 409, 412):
         remember_sync_state(state, calendar_id, supported=True, token="", ctag=ctag)
         sync_log("sync-6578-reset", calendarId=calendar_id, status=status, ifChanged=if_changed)
@@ -2067,7 +2183,7 @@ def apply_collection_report(href: str, username: str, password: str, token: str,
             parse_client = modules.ECal.Client.connect_sync(source, modules.ECal.ClientSourceType.EVENTS, 10, None)
         except Exception:
             parse_client = None
-    new_events, failed_uids = ingest_changed_items(changed, calendar, parse_client, modules, window_start, window_end, username, password)
+    new_events, failed_uids = ingest_changed_items(changed, calendar, parse_client, modules, window_start, window_end, username, password, href)
     remote_uids.extend(str(event.get("uid") or "") for event in new_events if event.get("uid"))
     drop_uids = deleted_touch_keys(cache, calendar_id)
     failed_keep = [uid for uid in failed_uids if uid not in drop_uids]
@@ -2109,7 +2225,7 @@ def caldav_sync_calendar(source, registry, modules: EdsModules, calendar: dict, 
     if current.get("supported") is True and token:
         pass
     else:
-        status, body, _headers = caldav_http("PROPFIND", href, username, password, SYNC_PROBE_BODY, {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"})
+        status, body, _headers = caldav_http("PROPFIND", href, username, password, SYNC_PROBE_BODY, {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"}, base_url=href)
         supported, probed_token, ctag = parse_sync_probe(body) if status in (200, 207) else (False, "", "")
         if cache is not None:
             cache["syncState"] = state
@@ -2303,6 +2419,13 @@ def sync_log(message: str, **fields) -> None:
         path = cache_dir() / "sync.log"
         line = {"at": iso(datetime.now(UTC)), "message": message}
         line.update(fields)
+        try:
+            # Rotate instead of growing without bound: sync.log.1 replaces any
+            # previous rotation and the log starts fresh.
+            if path.is_file() and path.stat().st_size > MAX_SYNC_LOG_BYTES:
+                os.replace(path, path.parent / (path.name + ".1"))
+        except OSError:
+            pass
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(line, separators=(",", ":")) + "\n")
     except Exception:
@@ -2331,10 +2454,33 @@ def _bar_entry_id(entry) -> str:
     return str(entry or "")
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text through a fresh 0600 temp file, then rename it over path.
+
+    A unique mkstemp name (instead of a fixed .tmp path) keeps an attacker or
+    an earlier crash from planting a symlink at the temp location; the rename
+    preserves the fsync-before-replace semantics callers relied on.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _write_shell_config(path: Path, data: dict) -> None:
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def ensure_right_anchor(plugin_id: str) -> dict:
@@ -2411,7 +2557,6 @@ def write_reminders(payload: dict) -> dict:
         fired = current["fired"]
     data = {"minutes": minutes, "fired": [str(item) for item in fired if item][:MAX_FIRED]}
     path = reminders_file()
-    tmp = path.with_suffix(".json.tmp")
     raw = json.dumps(data, separators=(",", ":"))
     if len(raw.encode("utf-8")) > MAX_REMINDER_BYTES:
         data["fired"] = data["fired"][: max(0, len(data["fired"]) // 2)]
@@ -2421,8 +2566,7 @@ def write_reminders(payload: dict) -> dict:
             raw = json.dumps(data, separators=(",", ":"))
     if len(raw.encode("utf-8")) > MAX_REMINDER_BYTES:
         return {"ok": False, "minutes": minutes, "fired": current["fired"], "error": {"code": "reminders-too-large", "message": "Reminder state was too large."}}
-    tmp.write_text(raw, encoding="utf-8")
-    tmp.replace(path)
+    _atomic_write_text(path, raw)
     return {"ok": True, "minutes": minutes, "fired": data["fired"]}
 
 
@@ -2552,7 +2696,6 @@ def adopt_newer_cache_events(payload: dict, start_rev: int, modes: dict | None =
 
 def write_cache(payload: dict, bump: bool = False) -> None:
     path = cache_file()
-    tmp = path.with_suffix(".json.tmp")
     disk = None if bump else read_cache()
     if disk is not None and cache_rev(disk) > cache_rev(payload):
         payload = dict(payload)
@@ -2589,8 +2732,7 @@ def write_cache(payload: dict, bump: bool = False) -> None:
         raw = json.dumps(data, separators=(",", ":"))
     if len(raw.encode("utf-8")) > MAX_CACHE_BYTES:
         return
-    tmp.write_text(raw, encoding="utf-8")
-    tmp.replace(path)
+    _atomic_write_text(path, raw)
 
 
 def read_cache() -> dict | None:
@@ -2630,7 +2772,6 @@ def read_tasks_cache() -> dict | None:
 
 def write_tasks_cache(payload: dict, bump: bool = False) -> None:
     path = tasks_cache_file()
-    tmp = path.with_suffix(".json.tmp")
     disk = None if bump else read_tasks_cache()
     payload = dict(payload)
     # A payload carrying a rev is a conditional write: a stale rev keeps disk
@@ -2657,8 +2798,7 @@ def write_tasks_cache(payload: dict, bump: bool = False) -> None:
         raw = json.dumps(data, separators=(",", ":"))
     if len(raw.encode("utf-8")) > MAX_CACHE_BYTES:
         return
-    tmp.write_text(raw, encoding="utf-8")
-    tmp.replace(path)
+    _atomic_write_text(path, raw)
 
 
 def merge_cache_task(task: dict) -> None:

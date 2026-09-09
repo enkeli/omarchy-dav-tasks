@@ -55,7 +55,7 @@ def start_server() -> tuple[subprocess.Popen, str]:
 
 def report(mod, href: str, token: str = "") -> tuple[str, list, list, bool]:
     body = mod.SYNC_REPORT_BODY.format(token=token.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")).encode()
-    status, payload, _headers = mod.caldav_http("REPORT", href, USER, PASSWORD, body, {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"})
+    status, payload, _headers = mod.caldav_http("REPORT", href, USER, PASSWORD, body, {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"}, base_url=href)
     if status not in (200, 207):
         raise SystemExit(f"not ok - REPORT {status} for {href}")
     return mod.parse_sync_collection(payload, href)
@@ -167,6 +167,106 @@ def run() -> int:
         leftover = mod.apply_sync_delta(pers_events, stale_removed, [])
         check("unknown 404s do not wipe the other calendar", leftover == pers_events)
 
+        # Security: the sync-collection response is untrusted. A hostile server
+        # can point <d:href> at another origin or at a file: URL; the helper
+        # must refuse before fetching anything, without crashing, and keep
+        # previously synced data intact.
+        def request_count() -> int:
+            request = urllib.request.Request(base + "/_control/requests")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return int(json.load(response)["requests"])
+
+        control(base, {"op": "inject-hrefs", "hrefs": ["http://169.254.169.254/x", "file:///etc/passwd"]})
+        _tok, injected_changed, _inj_removed, _tr = report(mod, work["href"], token4)
+        injected_uids = {item["uid"] for item in injected_changed}
+        check("hostile sync-collection hrefs reach the parser", {"x", "passwd"} <= injected_uids, str(injected_changed))
+        before_count = request_count()
+        hostile_items = [item for item in injected_changed if item["uid"] in {"x", "passwd"}]
+        refused_new, refused_uids = mod.ingest_changed_items(
+            hostile_items,
+            {"id": "work", "name": "Work", "provider": "caldav", "host": "127.0.0.1", "source": "test"},
+            None,
+            None,
+            datetime.now(UTC),
+            datetime.now(UTC) + timedelta(days=1),
+            USER,
+            PASSWORD,
+            work["href"],
+        )
+        after_count = request_count()
+        check(
+            "foreign sync hrefs are refused without any fetch",
+            refused_new == [] and refused_uids == ["x", "passwd"] and after_count == before_count,
+            str((refused_new, refused_uids, after_count - before_count)),
+        )
+        kept = mod.apply_sync_delta(work_events, [], refused_new, keep_uids=refused_uids)
+        check("refused sync hrefs keep existing events intact", kept == work_events, str(kept))
+        direct_error = ""
+        try:
+            mod.caldav_http("GET", "file:///etc/passwd", USER, PASSWORD, b"", {}, base_url=work["href"])
+        except ValueError as error:
+            direct_error = str(error)
+        check("caldav_http refuses non-http(s) fetch targets", direct_error != "", direct_error)
+        direct_error = ""
+        try:
+            mod.caldav_http("GET", "http://169.254.169.254/x", USER, PASSWORD, b"", {}, base_url=work["href"])
+        except ValueError as error:
+            direct_error = str(error)
+        check("caldav_http refuses cross-origin fetch targets", direct_error != "", direct_error)
+        control(base, {"op": "inject-hrefs", "hrefs": []})
+
+        # Redirects: a redirect that leaves the configured origin (or downgrades
+        # the scheme) must be refused; the fake server is http-only, so a
+        # cross-origin http target covers the same validator code path.
+        redirect_status, redirect_raw, _redirect_headers = mod.caldav_http("GET", base + "/redirect-away", USER, PASSWORD, b"", {}, base_url=work["href"])
+        check(
+            "redirect to another origin is refused",
+            redirect_raw == b"" and redirect_status in (302, 0),
+            str((redirect_status, redirect_raw)),
+        )
+        refused_log = ""
+        log_path = Path(cache_dir) / "sync.log"
+        if log_path.is_file():
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("message") == "sync-redirect-refused":
+                    refused_log = json.dumps(entry)
+        check("refused redirect lands in sync.log", "169.254.169.254" in refused_log, refused_log)
+
+        # Discovery: a server-supplied current-user-principal href on another
+        # origin must be refused, and never fetched with the stored credentials.
+        original_propfind = mod.caldav_propfind
+        fetched_urls: list[str] = []
+
+        def hostile_propfind(url, username, password, timeout=8.0, *, base_url):
+            fetched_urls.append(url)
+            if url == base + "/":
+                evil = (
+                    b'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">'
+                    b"<d:response><d:href>/</d:href><d:propstat><d:prop>"
+                    b"<d:current-user-principal><d:href>http://evil.test/principal</d:href></d:current-user-principal>"
+                    b"</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"
+                )
+                return 207, evil
+            return original_propfind(url, username, password, timeout=timeout, base_url=base_url)
+
+        mod.caldav_propfind = hostile_propfind
+        discovery_error = ""
+        try:
+            mod.discover_caldav_calendars(base + "/", USER, PASSWORD)
+        except ValueError as error:
+            discovery_error = str(error)
+        finally:
+            mod.caldav_propfind = original_propfind
+        check(
+            "discovery refuses server-supplied cross-origin URLs",
+            discovery_error != "" and not any(url.startswith("http://evil.test") for url in fetched_urls),
+            str((discovery_error, fetched_urls)),
+        )
+
         try:
             modules = mod.load_eds_modules()
         except Exception:
@@ -210,7 +310,7 @@ def run() -> int:
                 )
                 uid = str(created.get("uid") or "")
                 task_resource = mod.caldav_task_resource(work["href"], uid)
-                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {}, base_url=work["href"])
                 stored = raw.decode("utf-8", "replace")
                 check(
                     "created VTODO is stored with task fields",
@@ -242,7 +342,7 @@ def run() -> int:
                     and updated_task.get("categories") == ["Work", "Home"],
                     str(updated),
                 )
-                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                status_code, raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {}, base_url=work["href"])
                 updated_ics = raw.decode("utf-8", "replace")
                 check(
                     "updated VTODO keeps carried-over properties",
@@ -280,7 +380,7 @@ def run() -> int:
                     completed_invalid.get("ok") is True and (completed_invalid.get("task") or {}).get("status") == "completed",
                     str(completed_invalid),
                 )
-                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], seeded_uid), USER, PASSWORD, b"", {})
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], seeded_uid), USER, PASSWORD, b"", {}, base_url=work["href"])
                 repaired = raw.decode("utf-8", "replace")
                 check(
                     "repaired VTODO drops DTSTART and keeps DUE",
@@ -292,7 +392,7 @@ def run() -> int:
                 guard_due = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)
                 guarded = mod.create_task_caldav("work", "Guard Task", guard_due, "", [], 0, "needs-action", 0, guard_due)
                 guard_uid = str(guarded.get("uid") or "")
-                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], guard_uid), USER, PASSWORD, b"", {})
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], guard_uid), USER, PASSWORD, b"", {}, base_url=work["href"])
                 guard_ics = raw.decode("utf-8", "replace")
                 check(
                     "created VTODO drops DTSTART when DUE<=DTSTART",
@@ -317,7 +417,7 @@ def run() -> int:
                 with contextlib.redirect_stdout(captured):
                     mod.main(["update-task", "--provider", "caldav", "--calendar-id", "work", "--uid", main_uid, "--status", "needs-action", "--percent-complete", "50"])
                 main_payload = json.loads(captured.getvalue())
-                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], main_uid), USER, PASSWORD, b"", {})
+                status_code, raw, _headers = mod.caldav_http("GET", mod.caldav_task_resource(work["href"], main_uid), USER, PASSWORD, b"", {}, base_url=work["href"])
                 main_ics = raw.decode("utf-8", "replace")
                 check(
                     "CLI update without --from keeps stored dates",
@@ -355,14 +455,14 @@ def run() -> int:
                 check("failed task writes land in sync.log", "task-update-failed" in logged and "415" in logged and uid in logged, logged)
                 deleted = mod.delete_task_caldav("work", uid)
                 check("caldav delete-task removes the task", deleted.get("ok") is True, str(deleted))
-                status_code, _raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {})
+                status_code, _raw, _headers = mod.caldav_http("GET", task_resource, USER, PASSWORD, b"", {}, base_url=work["href"])
                 check("deleted task resource is gone", status_code == 404, str(status_code))
                 _del_token, _changed, del_removed, _trunc = report(mod, work["href"], task_token)
                 check("deleted task appears as a REPORT 404", uid in del_removed, str(del_removed))
             finally:
                 mod.caldav_task_session = original_session
 
-        probe_status, probe_body = mod.caldav_propfind(work["href"], USER, PASSWORD)
+        probe_status, probe_body = mod.caldav_propfind(work["href"], USER, PASSWORD, base_url=work["href"])
         supported, probed_token, ctag = mod.parse_sync_probe(probe_body) if probe_status in (200, 207) else (False, "", "")
         check("calendar advertises sync-collection", supported is True and probed_token.startswith("http://example.test/ns/sync/"), str((supported, probed_token, ctag)))
 
