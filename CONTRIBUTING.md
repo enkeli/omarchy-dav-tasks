@@ -4,8 +4,10 @@ This project follows Omarchy's plugin model and development conventions where ap
 
 ## Principles
 
-- Keep provider-specific logic out of QML.
-- Keep credentials out of plugin settings, source code, shell config, logs, and tests.
+- This is a standalone Omarchy plugin (`dev.enkeli.omarchy-dav-tasks`), not an Omarchy core checkout; do not edit `/usr/share/omarchy`.
+- Runtime entry points are `Service.qml` (service) and `BarWidget.qml` (bar widget), declared in `manifest.json`; `Panel.qml` owns the popup and `TasksView.qml` owns its task/config views.
+- Keep provider and process logic in `Service.qml` and `helper/omarchy-calendar-helper`, not in QML presentation code; normalize provider data before exposing it to QML.
+- Credentials stay in the system keyring/stdin flow; never put them in plugin settings, source code, shell config, logs, or tests.
 - Prefer small, reviewable changes.
 - Add tests for pure model behavior and helper protocol changes.
 - Use the shared Omarchy shell UI components and theme roles.
@@ -17,6 +19,7 @@ This project follows Omarchy's plugin model and development conventions where ap
 - Bash scripts use `#!/bin/bash`.
 - Markdown uses full lines rather than hard-wrapping at 80 columns.
 - Provider-facing data should be normalized before reaching QML.
+- Use shared `qs.Commons`/`qs.Ui` components and `Color`/`Style` theme roles for UI. The custom `qs.Ui.Button` uses flat properties such as `fontFamily`; do not use unsupported Qt Quick Controls grouped properties like `font.family` on it.
 
 ## Branching
 
