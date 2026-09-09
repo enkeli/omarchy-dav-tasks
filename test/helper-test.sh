@@ -481,6 +481,93 @@ assert parsed[0]["title"] == "Test event creation in forwardemail"
 assert parsed[0]["start"] == "2026-08-24T05:00:00Z"
 print("ok - helper forwardemail ics parse")' "$ROOT/helper/omarchy-calendar-helper"
 
+python3 -c 'from importlib.machinery import SourceFileLoader; import sys
+mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
+base = "https://caldav.example.com/dav/user/"
+assert mod.validated_url("https://caldav.example.com/dav/user/cal/x.ics", base) == "https://caldav.example.com/dav/user/cal/x.ics"
+assert mod.validated_url("https://caldav.example.com:443/dav/user/x.ics", base)
+def refused(url, origin=base):
+    try:
+        mod.validated_url(url, origin)
+    except ValueError:
+        return True
+    return False
+assert refused("http://caldav.example.com/dav/user/x.ics")
+assert refused("ftp://caldav.example.com/x.ics")
+assert refused("file:///etc/passwd")
+assert refused("https://evil.test/x.ics")
+assert refused("https://caldav.example.com:8443/x.ics")
+assert refused("https://user:secret@caldav.example.com/x.ics")
+assert refused("//caldav.example.com/x.ics")
+assert refused("/dav/user/x.ics")
+assert refused("https://caldav.example.com/x.ics", "http://127.0.0.1:8080/")
+assert refused("http://evil.test/x.ics", "http://127.0.0.1:8080/")
+assert mod.validated_url("http://127.0.0.1:8080/dav/x.ics", "http://127.0.0.1:8080/dav/")
+try:
+    mod.caldav_origin("https://example.com:bad/x")
+except ValueError:
+    pass
+else:
+    raise SystemExit("expected invalid port to fail")
+print("ok - helper caldav url origin validation")' "$ROOT/helper/omarchy-calendar-helper"
+
+python3 -c 'from importlib.machinery import SourceFileLoader; import json, os, sys, tempfile
+from pathlib import Path
+mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
+folder = Path(tempfile.mkdtemp())
+os.environ["OMARCHY_CALENDAR_CACHE"] = str(folder)
+scratch = folder / "outside-target.txt"
+scratch.write_text("untouched")
+# Plant symlinks at the old fixed temp names pointing outside the cache dir.
+(folder / "cache.json.tmp").symlink_to(scratch)
+(folder / "tasks-cache.json.tmp").symlink_to(scratch)
+(folder / "reminders.json.tmp").symlink_to(scratch)
+mod.write_cache({"ok": True, "calendars": [{"id": "c"}], "events": []})
+mod.write_tasks_cache({"ok": True, "tasks": []})
+mod.write_reminders({"minutes": 5, "fired": []})
+cache = mod.read_cache()
+assert cache is not None and cache.get("ok") is True
+assert mod.read_tasks_cache() is not None
+assert mod.read_reminders()["minutes"] == 5
+assert scratch.read_text() == "untouched"
+# every cache file is written with 0600
+for name in ("cache.json", "tasks-cache.json", "reminders.json"):
+    assert (folder / name).stat().st_mode & 0o777 == 0o600, name
+# sync.log rotation at the 5 MB bound
+mod.sync_log("rotate-me")
+for _ in range(2):
+    big = folder / "sync.log"
+    big.write_bytes(b"x" * (mod.MAX_SYNC_LOG_BYTES + 1))
+    mod.sync_log("after-rotation")
+    assert not big.exists() or big.stat().st_size <= mod.MAX_SYNC_LOG_BYTES
+    assert (folder / "sync.log.1").stat().st_size > mod.MAX_SYNC_LOG_BYTES
+print("ok - helper atomic writes resist planted tmp symlinks")' "$ROOT/helper/omarchy-calendar-helper"
+
+if printf '{"url":"https://user:pass@example.com/dav/","username":"user","password":"pass"}' | "$ROOT/helper/omarchy-calendar-helper" setup-caldav --provider evolution-data-server >"$tmp" 2>/dev/null; then
+  echo "not ok - setup-caldav with embedded credentials should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and (.error.message | contains("embedded credentials"))' "$tmp" >/dev/null
+echo "ok - helper setup-caldav rejects embedded credentials"
+
+python3 -c 'from importlib.machinery import SourceFileLoader; import os, sys, tempfile
+from pathlib import Path
+mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module()
+os.environ["OMARCHY_CALENDAR_CACHE"] = str(Path(tempfile.mkdtemp()))
+original_fe = mod.is_forwardemail_host
+original_setup = mod.eds_setup_caldav_propfind
+mod.is_forwardemail_host = lambda host: True
+mod.eds_setup_caldav_propfind = lambda display_name, url, username, password: {"ok": True}
+try:
+    secure = mod.eds_setup_caldav({"displayName": "T", "url": "https://caldav.forwardemail.net/dav/", "username": "u", "password": "p"})
+    plain = mod.eds_setup_caldav({"displayName": "T", "url": "http://caldav.forwardemail.net/dav/", "username": "u", "password": "p"})
+finally:
+    mod.is_forwardemail_host = original_fe
+    mod.eds_setup_caldav_propfind = original_setup
+assert secure.get("ok") is True and "warning" not in secure
+assert plain.get("ok") is True and "not encrypted" in (plain.get("warning") or "")
+print("ok - helper setup-caldav warns on plain http")' "$ROOT/helper/omarchy-calendar-helper"
+
 if [[ ${OMARCHY_CALENDAR_WRITE_TEST:-} == "1" ]]; then
 python3 - "$ROOT/helper/omarchy-calendar-helper" <<'PY'
 import importlib.machinery

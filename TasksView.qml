@@ -93,19 +93,74 @@ Column {
     id: taskSection
     property string title: ""
     property var tasks: []
+    // Total tasks in this category (uncapped), shown next to the title.
+    property int count: 0
     property string emptyText: "No tasks"
     property string dateLabel: "due"
     property bool showOverdue: false
+    // Pagination: `tasks` carries the full uncapped list and the view owns
+    // slicing; the Repeater renders only the current page.
+    property int pageSize: 5
+    property int page: 1
+    readonly property int pageCount: Math.max(1, Math.ceil(tasks.length / pageSize))
+    // Clamped read-only view of `page`, so a shrunken list can never drive
+    // the slice or the pager label out of range.
+    readonly property int currentPage: Math.min(Math.max(page, 1), pageCount)
+    readonly property var pageTasks: tasks.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    // Exactly pageSize slots whenever the section is populated: real tasks
+    // for the first pageTasks.length entries, null fillers after. The
+    // Repeater therefore always lays out a full page, so a short list can
+    // never shrink the section and pull the next one up. Section height
+    // falls out of the Column's natural layout — no height overrides and no
+    // cross-item measurements that could defer or latch.
+    readonly property var pageSlots: {
+      if (tasks.length === 0) return []
+      var slots = []
+      var shown = pageTasks.length
+      for (var i = 0; i < pageSize; i++) slots.push(i < shown ? pageTasks[i] : null)
+      return slots
+    }
+    // Canonical stand-in for filler slots. It mirrors a real collapsed row's
+    // structure — calendar meta line shown, like every normalized task — so
+    // placeholder height matches real row height exactly (layout
+    // replication, not measurement). TaskItem blanks and disables the
+    // stand-in via its `inert` flag.
+    readonly property var placeholderStandIn: ({ id: "", title: "", calendarName: "Calendar", status: "NEEDS-ACTION" })
     width: parent.width
     spacing: Style.space(4)
 
-    Text {
+    // Model rebuilds hand back a fresh array; that reference change snaps
+    // back to the first page, mirroring how delegate rebuilds reset
+    // TaskItem.expanded. Imperative write, so no binding loop.
+    onTasksChanged: taskSection.page = 1
+
+    // Title row: bold accent label followed inline by the total count in
+    // parentheses, muted and one step smaller. Always rendered so the
+    // counter keeps a stable home as the underlying data changes.
+    Item {
       width: parent.width
-      text: taskSection.title
-      color: Color.accent
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      font.bold: true
+      height: taskSectionTitle.implicitHeight
+
+      Text {
+        id: taskSectionTitle
+        anchors.left: parent.left
+        text: taskSection.title
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
+
+      Text {
+        anchors.left: taskSectionTitle.right
+        anchors.leftMargin: Style.space(4)
+        anchors.baseline: taskSectionTitle.baseline
+        text: "(" + taskSection.count + ")"
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        textFormat: Text.PlainText
+      }
     }
 
     Rectangle {
@@ -115,15 +170,94 @@ Column {
     }
 
     Repeater {
-      model: taskSection.tasks
+      model: taskSection.pageSlots
 
       TaskItem {
         required property var modelData
         required property int index
+        readonly property bool placeholder: !modelData
         width: taskSection.width
-        task: modelData
+        // Filler slots (modelData null) render the stand-in so the row's
+        // internal layout matches real rows exactly; `inert` blanks and
+        // disables everything the stand-in would otherwise paint.
+        task: modelData || taskSection.placeholderStandIn
+        inert: placeholder
         showOverdue: taskSection.showOverdue
         dateLabel: taskSection.dateLabel
+      }
+    }
+
+    // Pager: flat muted text row, centered. It occupies its slot in every
+    // populated section so the 5↔6 boundary — where the pager first
+    // appears — never shifts the layout either: with a single page it
+    // renders as a same-height blank spacer (opacity 0; both arrows are
+    // disabled because currentPage equals pageCount). Hovered arrows pick
+    // up the accent like the status circle; spent ends dim out the way
+    // disabled due-date cells do. Hidden entirely on empty sections, which
+    // stay compact.
+    Row {
+      visible: taskSection.tasks.length > 0
+      opacity: taskSection.pageCount > 1 ? 1 : 0
+      anchors.horizontalCenter: parent.horizontalCenter
+      spacing: Style.space(6)
+
+      Item {
+        width: Style.space(12)
+        height: pagerLabel.implicitHeight
+        enabled: taskSection.currentPage > 1
+
+        Text {
+          anchors.centerIn: parent
+          text: "‹"
+          color: !parent.enabled ? Util.alpha(Color.muted, 0.35)
+            : prevPageMouse.containsMouse ? Color.accent
+            : Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
+        }
+
+        MouseArea {
+          id: prevPageMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: taskSection.page = Math.max(1, taskSection.page - 1)
+        }
+      }
+
+      Text {
+        id: pagerLabel
+        text: taskSection.currentPage + " / " + taskSection.pageCount
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        textFormat: Text.PlainText
+      }
+
+      Item {
+        width: Style.space(12)
+        height: pagerLabel.implicitHeight
+        enabled: taskSection.currentPage < taskSection.pageCount
+
+        Text {
+          anchors.centerIn: parent
+          text: "›"
+          color: !parent.enabled ? Util.alpha(Color.muted, 0.35)
+            : nextPageMouse.containsMouse ? Color.accent
+            : Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
+        }
+
+        MouseArea {
+          id: nextPageMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: taskSection.page = Math.min(taskSection.pageCount, taskSection.page + 1)
+        }
       }
     }
 
@@ -150,6 +284,11 @@ Column {
     // Two-step delete confirmation: armed by the footer button's first click,
     // fired by the second, disarmed by timeout, collapse, or model rebuild.
     property bool deleteArmed: false
+    // Page-slot filler row: rendered from the section's stand-in object so
+    // its geometry matches real rows exactly, with all content blanked and
+    // every interaction disabled (no hover fill, no click targets, no
+    // cursor change).
+    property bool inert: false
 
     // Case-insensitive completed check: the Done tab filters with
     // TaskModel.isCompleted, so icon/strikethrough must use the same
@@ -272,7 +411,7 @@ Column {
     // owns the hover grab there; OR it in to keep the row highlighted while
     // the cursor is on the glyph. Expanded rows hold the fill so the open
     // card reads as active even without the cursor over it.
-    color: taskItem.expanded || taskItemMouse.containsMouse || statusCompleteMouse.containsMouse
+    color: !taskItem.inert && (taskItem.expanded || taskItemMouse.containsMouse || statusCompleteMouse.containsMouse)
       ? Style.hoverFillFor(Color.foreground, Color.accent)
       : "transparent"
 
@@ -296,10 +435,14 @@ Column {
       anchors.top: parent.top
       anchors.topMargin: Style.space(3)
       spacing: Style.space(6)
+      // Filler rows blank their content; geometry — and therefore the row
+      // height the page slot relies on — stays identical to real rows.
+      opacity: taskItem.inert ? 0 : 1
 
       Text {
         id: statusIcon
         anchors.verticalCenter: parent.verticalCenter
+        visible: !taskItem.inert
         text: taskItem.completed ? "\u2713" : "\u25CB"
         // Completed rows keep the static muted check; pending rows light up
         // accent while the cursor is on the click target to hint "click me".
@@ -427,6 +570,8 @@ Column {
       id: taskItemMouse
       anchors.fill: parent
       hoverEnabled: true
+      // Filler rows are dead space: no expansion, no hover, no cursor.
+      enabled: !taskItem.inert
       cursorShape: Qt.PointingHandCursor
       onClicked: {
         if (!taskItem.task) return
@@ -616,7 +761,7 @@ Column {
       width: Style.space(18)
       height: Style.space(18)
       hoverEnabled: true
-      enabled: taskItem.task && !taskItem.completed
+      enabled: taskItem.task && !taskItem.completed && !taskItem.inert
       cursorShape: Qt.PointingHandCursor
       onClicked: {
         if (!tasksView.taskService || !taskItem.task) return
@@ -693,15 +838,98 @@ Column {
     // Absent/undefined enabled counts as enabled; only an explicit false
     // dims the row and flips the button to "Enable".
     readonly property bool calendarDisabled: calendar && calendar.enabled === false
+    // Resolved dot color: color override -> provider color -> stable palette slot.
+    readonly property string currentColor: TaskModel.calendarDisplayColor(calendar, {}, calendarIndex)
+    // A color write is in flight for this row / anywhere in the service.
+    readonly property bool colorPending: calendarService && calendarService.pendingColorId === calendarId
+    readonly property bool colorBusy: calendarService && calendarService.pendingColorId !== ""
+    // Non-toggleable calendars stay display-only dots; also serialized like
+    // the toggle button: no pick starts while any color write is in flight.
+    readonly property bool pickable: toggleable && !colorBusy
 
     Rectangle {
       width: Style.space(22)
       height: Style.space(22)
       radius: width / 2
       anchors.verticalCenter: parent.verticalCenter
-      color: calendar && calendar.color ? calendar.color : Color.accent
+      color: settingsCalendarRow.currentColor || Color.accent
       border.width: 1
-      border.color: Util.alpha(Color.foreground, 0.35)
+      // Hover brightens the ring so the dot reads as a clickable control.
+      border.color: swatchMouse.enabled && swatchMouse.hovered ? Color.foreground : Util.alpha(Color.foreground, 0.35)
+      // Quiet busy cue while this row's color write is in flight.
+      opacity: settingsCalendarRow.colorPending ? 0.55 : 1.0
+
+      MouseArea {
+        id: swatchMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        enabled: settingsCalendarRow.pickable
+        onClicked: colorPopup.open()
+      }
+
+      Popup {
+        id: colorPopup
+        padding: Style.space(6)
+        modal: false
+        dim: false
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        // Below the swatch by default; flip above when the row sits near the
+        // bottom of the panel so the palette never opens off-surface.
+        onAboutToShow: {
+          var gap = Style.space(4)
+          var need = implicitHeight + gap
+          var sceneY = settingsCalendarRow.mapToItem(null, 0, 0).y
+          var winHeight = tasksView.Window.window ? tasksView.Window.window.height : 0
+          y = winHeight - sceneY < need + parent.height + Style.space(12) ? -need : parent.height + gap
+        }
+
+        background: Rectangle {
+          color: Color.popups.background
+          border.color: Color.accent
+          border.width: 1
+          radius: Style.cornerRadius
+        }
+
+        contentItem: Flow {
+          spacing: Style.space(6)
+
+          Repeater {
+            model: TaskModel.DEFAULT_CALENDAR_COLORS
+
+            Rectangle {
+              required property var modelData
+              width: Style.space(16)
+              height: Style.space(16)
+              radius: width / 2
+              color: modelData
+              border.width: TaskModel.colorsMatch(modelData, settingsCalendarRow.currentColor) ? 2 : 1
+              border.color: TaskModel.colorsMatch(modelData, settingsCalendarRow.currentColor) ? Color.foreground : Util.alpha(Color.foreground, 0.35)
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                // Serialized: ignore picks while any color write is in flight.
+                enabled: !settingsCalendarRow.colorBusy
+                onClicked: {
+                  if (calendarService) calendarService.setCalendarColor(settingsCalendarRow.calendarId, parent.modelData)
+                  colorPopup.close()
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Panel hide must not leave the palette logically open, or the next
+      // open would surface a stale popup over the config tab.
+      Connections {
+        target: tasksView
+        function onOpenedChanged() {
+          if (!tasksView.opened && colorPopup.opened) colorPopup.close()
+        }
+      }
     }
 
     Text {
@@ -1017,7 +1245,8 @@ Column {
 
     TaskSection {
       title: "Upcoming"
-      tasks: TaskModel.upcomingTasks(tasksView.allTasks, 5)
+      count: TaskModel.upcomingTaskCount(tasksView.allTasks)
+      tasks: TaskModel.allUpcomingTasks(tasksView.allTasks)
       emptyText: "No upcoming tasks"
       dateLabel: "due"
       showOverdue: true
@@ -1025,6 +1254,7 @@ Column {
 
     TaskSection {
       title: "Backlog"
+      count: TaskModel.backlogTaskCount(tasksView.allTasks)
       tasks: TaskModel.backlogTasks(tasksView.allTasks)
       emptyText: "No backlog tasks"
       dateLabel: "created"
@@ -1040,7 +1270,11 @@ Column {
 
     TaskSection {
       title: "Completed"
-      tasks: TaskModel.doneTasks(tasksView.allTasks, 10)
+      count: TaskModel.doneTaskCount(tasksView.allTasks)
+      tasks: TaskModel.allDoneTasks(tasksView.allTasks)
+      // Roomier page: the done tab stacks one section, so 10 rows (~430px)
+      // still fits the fixed panel height where two 5-row sections do.
+      pageSize: 10
       emptyText: "No completed tasks"
       dateLabel: "completed"
       showOverdue: false
@@ -1099,6 +1333,20 @@ Column {
     // line; the service clears it on the next successful toggle.
     Text {
       readonly property string message: calendarService && calendarService.toggleError ? calendarService.toggleError : ""
+      visible: message !== ""
+      width: parent.width
+      text: message
+      color: Color.urgent
+      wrapMode: Text.WordWrap
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    // Color-pick failure feedback, same line style as the toggle error; the
+    // service clears it on the next pick attempt.
+    Text {
+      readonly property string message: calendarService && calendarService.colorError ? calendarService.colorError : ""
       visible: message !== ""
       width: parent.width
       text: message

@@ -67,6 +67,10 @@ class Store:
         self.truncate = False
         self.put_fault = False
         self.put_fault_status = 415
+        # Extra untrusted hrefs spliced into REPORT responses (security tests).
+        self.injections: list[str] = []
+        # Count of helper requests served, excluding /_control endpoints.
+        self.requests = 0
         self.calendars = {
             "work": {"name": "Work", "events": {}, "tasks": {}},
             "personal": {"name": "Personal", "events": {}, "tasks": {}},
@@ -135,6 +139,12 @@ class Handler(BaseHTTPRequestHandler):
     def _store(self) -> Store:
         return self.server.store
 
+    def _track(self) -> None:
+        path = urlparse(self.path).path
+        if not path.startswith("/_control"):
+            with self._store().lock:
+                self._store().requests += 1
+
     def _authorized(self) -> bool:
         header = self.headers.get("Authorization") or ""
         if not header.startswith("Basic "):
@@ -174,6 +184,18 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps({"token": self._store().token, "calendars": self._store().calendars}, default=str).encode()
             self._send(200, body, "application/json")
             return
+        if parsed.path == "/_control/requests":
+            with self._store().lock:
+                body = json.dumps({"requests": self._store().requests}).encode()
+            self._send(200, body, "application/json")
+            return
+        self._track()
+        if parsed.path == "/redirect-away":
+            self.send_response(302)
+            self.send_header("Location", "http://169.254.169.254/redirected")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self._need_auth():
             return
         match = re.fullmatch(r"/dav/user/([^/]+)/([^/]+)\.ics", parsed.path)
@@ -191,6 +213,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, "text/calendar; charset=utf-8")
 
     def do_PUT(self) -> None:
+        self._track()
         if self._need_auth():
             return
         match = re.fullmatch(r"/dav/user/([^/]+)/([^/]+)\.ics", urlparse(self.path).path)
@@ -226,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(201, b"")
 
     def do_DELETE(self) -> None:
+        self._track()
         if self._need_auth():
             return
         match = re.fullmatch(r"/dav/user/([^/]+)/([^/]+)\.ics", urlparse(self.path).path)
@@ -281,12 +305,15 @@ class Handler(BaseHTTPRequestHandler):
             elif op == "put-fault":
                 store.put_fault = bool(payload.get("on", True))
                 store.put_fault_status = int(payload.get("status") or 415)
+            elif op == "inject-hrefs":
+                store.injections = [str(item) for item in (payload.get("hrefs") or [])]
             else:
                 self._send(400, b"")
                 return
         self._send(200, b'{"ok":true}', "application/json")
 
     def do_PROPFIND(self) -> None:
+        self._track()
         if self._need_auth():
             return
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -357,6 +384,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(207, body)
 
     def do_REPORT(self) -> None:
+        self._track()
         if self._need_auth():
             return
         parsed = urlparse(self.path)
@@ -416,6 +444,12 @@ class Handler(BaseHTTPRequestHandler):
             for name in store.stale_404s:
                 rows.append(
                     f"  <d:response><d:href>/dav/user/{slug}/{name}.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>"
+                )
+            for injected in store.injections:
+                rows.append(
+                    f"  <d:response><d:href>{injected}</d:href><d:propstat><d:prop>"
+                    f"<d:getetag>\"injected\"</d:getetag></d:prop>"
+                    "<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
                 )
             body = f"""<?xml version="1.0"?>
 <d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">

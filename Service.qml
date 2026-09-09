@@ -43,6 +43,10 @@ Item {
   property string pendingToggleId: ""
   property string toggleError: ""
 
+  // Calendar color properties
+  property string pendingColorId: ""
+  property string colorError: ""
+
   // CalDAV setup properties
   property string caldavSetupStatus: "idle"
   property string caldavSetupMessage: ""
@@ -485,6 +489,55 @@ Item {
     }
   }
 
+  function setCalendarColor(calendarId, colorHex) {
+    debugLog("action: set-calendar-color id=" + calendarId + " color=" + colorHex)
+    var id = String(calendarId || "")
+    if (!id || !colorHex || calendarColorProc.running || pendingColorId) return
+    var cal = null
+    for (var i = 0; i < calendars.length; i++) {
+      if (calendars[i] && calendars[i].id === id) { cal = calendars[i]; break }
+    }
+    if (!cal) {
+      colorError = "Calendar not found."
+      return
+    }
+    pendingColorId = id
+    colorError = ""
+    calendarColorProc.secret = JSON.stringify({ calendars: [{ id: id, name: cal.name || "", color: String(colorHex) }] })
+    calendarColorProc.command = [helperPath(), "update-calendars", "--provider", provider]
+    calendarColorProc.running = true
+  }
+
+  function finishSetCalendarColor(text, exitCode) {
+    var payload = TaskModel.parseHelperResponse(text)
+    if (exitCode === 0 && payload.ok) {
+      var id = pendingColorId
+      var color = ""
+      // Tolerate an ok payload without a calendars echo: skip the patch and
+      // still finish cleanly instead of throwing with pendingColorId set.
+      var payloadCalendars = payload.calendars || []
+      for (var i = 0; i < payloadCalendars.length; i++) {
+        if (payload.calendars[i] && payload.calendars[i].id === id) {
+          color = String(payload.calendars[i].color || "")
+          break
+        }
+      }
+      if (color) {
+        var mapCalendars = function(cal) {
+          return cal && cal.id === id ? Object.assign({}, cal, { color: color }) : cal
+        }
+        root.cachedCalendars = cachedCalendars.map(mapCalendars)
+        root.calendars = root.cachedCalendars
+      }
+      pendingColorId = ""
+      colorError = ""
+      listTasks(true)
+    } else {
+      colorError = failMessage(payload, "Could not update calendar color.")
+      pendingColorId = ""
+    }
+  }
+
   // ===== CalDAV Setup =====
 
   function setupCaldav(displayName, url, username, password) {
@@ -637,6 +690,23 @@ Item {
 
     onExited: function(exitCode) {
       root.finishSetCalendarEnabled(root.helperText(toggleOut.text, toggleErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: calendarColorProc
+    property string secret: ""
+    running: false
+    stdinEnabled: true
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector { id: calendarColorOut; waitForEnd: true }
+    stderr: StdioCollector { id: calendarColorErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.finishSetCalendarColor(root.helperText(calendarColorOut.text, calendarColorErr.text), exitCode)
     }
   }
 

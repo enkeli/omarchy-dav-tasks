@@ -68,6 +68,36 @@ assert.equal(model.upcomingTasks(upcomingInput, 2)[0].id, '1')
 assert.equal(model.upcomingTasks(upcomingInput, 2)[1].id, '2')
 assert.equal(model.upcomingTasks([]).length, 0)
 
+// upcomingTaskCount - total pending tasks with a due date, ignoring the display cap
+assert.equal(model.upcomingTaskCount(null), 0)
+assert.equal(model.upcomingTaskCount(undefined), 0)
+assert.equal(model.upcomingTaskCount([]), 0)
+assert.equal(model.upcomingTaskCount(upcomingInput), 4)
+const upcomingCountInput = [
+  { id: '1', title: 'A', status: 'NEEDS-ACTION', due: '2026-08-20' },
+  { id: '2', title: 'B', status: 'IN-PROCESS', due: '2026-08-21' },
+  { id: '3', title: 'C', status: 'NEEDS-ACTION', due: '2026-08-22' },
+  { id: '4', title: 'D', status: 'NEEDS-ACTION', due: '2026-08-23' },
+  { id: '5', title: 'E', status: 'NEEDS-ACTION', due: '2026-08-24' },
+  { id: '6', title: 'F', status: 'NEEDS-ACTION', due: '2026-08-25' },
+  { id: '7', title: 'G', status: 'COMPLETED', due: '2026-08-19' },
+  { id: '8', title: 'H', status: 'NEEDS-ACTION' }
+]
+assert.equal(model.upcomingTaskCount(upcomingCountInput), 6)
+assert.equal(model.upcomingTasks(upcomingCountInput, 5).length, 5)
+
+// allUpcomingTasks - full sorted upcoming list, no display cap
+assert.equal(model.allUpcomingTasks(null).length, 0)
+assert.equal(model.allUpcomingTasks(undefined).length, 0)
+assert.equal(model.allUpcomingTasks([]).length, 0)
+assert.equal(model.allUpcomingTasks(upcomingInput).length, 4)
+assert.equal(model.allUpcomingTasks(upcomingInput)[0].id, '1')
+const allUpcoming = model.allUpcomingTasks(upcomingCountInput)
+assert.equal(allUpcoming.length, 6)
+assert.equal(allUpcoming[0].id, '1')
+assert.equal(allUpcoming[5].id, '6')
+assert.equal(model.upcomingTasks(upcomingCountInput, 5).length, 5)
+
 // backlogTasks - pending tasks without due date, sorted by created desc
 const backlogInput = [
   { id: '1', title: 'A', status: 'NEEDS-ACTION', created: '2026-08-01T12:00:00Z' },
@@ -80,6 +110,13 @@ assert.equal(backlog.length, 2)
 assert.equal(backlog[0].id, '3')
 assert.equal(backlog[1].id, '1')
 assert.equal(model.backlogTasks([]).length, 0)
+
+// backlogTaskCount - total pending tasks without a due date (list is uncapped)
+assert.equal(model.backlogTaskCount(null), 0)
+assert.equal(model.backlogTaskCount(undefined), 0)
+assert.equal(model.backlogTaskCount([]), 0)
+assert.equal(model.backlogTaskCount(backlogInput), 2)
+assert.equal(model.backlogTaskCount(backlogInput), model.backlogTasks(backlogInput).length)
 
 // doneTasks - completed tasks sorted by completed desc
 const doneInput = [
@@ -97,6 +134,40 @@ assert.equal(model.doneTasks(doneInput, 2).length, 2)
 assert.equal(model.doneTasks(doneInput, 2)[0].id, '2')
 assert.equal(model.doneTasks(doneInput, 2)[1].id, '1')
 assert.equal(model.doneTasks([]).length, 0)
+
+// doneTaskCount - total completed tasks, exceeds the doneTasks display cap
+assert.equal(model.doneTaskCount(null), 0)
+assert.equal(model.doneTaskCount(undefined), 0)
+assert.equal(model.doneTaskCount([]), 0)
+assert.equal(model.doneTaskCount(doneInput), 3)
+const doneCountInput = [
+  { id: '1', title: 'T1', status: 'COMPLETED', completed: '2026-08-01' },
+  { id: '2', title: 'T2', status: 'COMPLETED', completed: '2026-08-02' },
+  { id: '3', title: 'T3', status: 'COMPLETED', completed: '2026-08-03' },
+  { id: '4', title: 'T4', status: 'COMPLETED', completed: '2026-08-04' },
+  { id: '5', title: 'T5', status: 'COMPLETED', completed: '2026-08-05' },
+  { id: '6', title: 'T6', status: 'COMPLETED', completed: '2026-08-06' },
+  { id: '7', title: 'T7', status: 'COMPLETED', completed: '2026-08-07' },
+  { id: '8', title: 'T8', status: 'COMPLETED', completed: '2026-08-08' },
+  { id: '9', title: 'T9', status: 'COMPLETED', completed: '2026-08-09' },
+  { id: '10', title: 'T10', status: 'COMPLETED', completed: '2026-08-10' },
+  { id: '11', title: 'T11', status: 'COMPLETED', completed: '2026-08-11' },
+  { id: '12', title: 'T12', status: 'COMPLETED', completed: '2026-08-12' }
+]
+assert.equal(model.doneTaskCount(doneCountInput), 12)
+assert.equal(model.doneTasks(doneCountInput).length, 10)
+
+// allDoneTasks - full sorted completed list, no display cap
+assert.equal(model.allDoneTasks(null).length, 0)
+assert.equal(model.allDoneTasks(undefined).length, 0)
+assert.equal(model.allDoneTasks([]).length, 0)
+assert.equal(model.allDoneTasks(doneInput).length, 3)
+assert.equal(model.allDoneTasks(doneInput)[0].id, '2')
+const allDone = model.allDoneTasks(doneCountInput)
+assert.equal(allDone.length, 12)
+assert.equal(allDone[0].id, '12')
+assert.equal(allDone[11].id, '1')
+assert.equal(model.doneTasks(doneCountInput).length, 10)
 
 // parseHelperResponse
 const okResponse = model.parseHelperResponse(JSON.stringify({ ok: true, provider: 'eds', calendars: [], tasks: [{ id: '1', title: 'A' }] }))
@@ -191,5 +262,23 @@ assert.equal(model.formatCompletedDate({}), '')
 assert.equal(model.formatCompletedDate({ completed: 'bad-date' }), '')
 assert.equal(model.formatCompletedDate({ completed: '2026-08-18T12:00:00Z' }), 'Aug 18')
 assert.equal(model.formatCompletedDate({ completed: '2025-06-01T12:00:00Z' }), 'Jun 1, 2025')
+
+// colorsMatch - case-insensitive, non-empty comparison of two color strings
+assert.equal(model.colorsMatch('#8AADF4', '#8aadf4'), true)
+assert.equal(model.colorsMatch('', '#fff'), false)
+assert.equal(model.colorsMatch('#fff', ''), false)
+assert.equal(model.colorsMatch(undefined, undefined), false)
+assert.equal(model.colorsMatch('#a6e3a1', '#a6e3a1'), true)
+assert.equal(model.colorsMatch(' #a6e3a1 ', '#a6e3a1'), true)
+assert.equal(model.colorsMatch('#8aadf4', '#a6e3a1'), false)
+
+// calendarDisplayColor - settings override beats calendar.color beats palette
+assert.equal(model.calendarDisplayColor({ id: 'c1', color: '#111111' }, { c1: '#222222' }), '#222222')
+assert.equal(model.calendarDisplayColor({ id: 'c1', color: '#111111' }, {}), '#111111')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, 0), '#8aadf4')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, 3), '#f38ba8')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, 12), '#f9e2af')
+assert.equal(model.calendarDisplayColor(null, {}, 5), '#8aadf4')
+assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, -1), '#a6e3a1')
 
 console.log('ok - task model')

@@ -2,7 +2,12 @@
 
 A task widget for the Omarchy shell. Sync with Nextcloud Tasks and manage your to-do list from the bar.
 
-![Nextcloud Tasks widget](preview.png)
+## Previews
+
+| Browse pending tasks | Completed tasks |
+| :---: | :---: |
+| <img src="preview_2.png" width="400" alt="Pending tasks grouped into Upcoming and Backlog sections with total counts and pagination"> | <img src="preview_4.png" width="400" alt="Completed tasks shown struck-through with completion dates and pagination"> |
+| <img src="preview_3.png" width="400" alt="New Task form with calendar, summary, description, due date, and category fields"> | <img src="preview_1.png" width="400" alt="Settings screen with calendar rows, CalDAV server connect form, and debug log console"> |
 
 ## Install
 

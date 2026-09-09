@@ -87,6 +87,32 @@ function upcomingTasks(tasks, maxCount) {
     .slice(0, limit)
 }
 
+// Uncapped counterpart of upcomingTasks: same filter+sort, no slice. The
+// tasks popup hands the full list to the view, which owns pagination.
+function allUpcomingTasks(tasks) {
+  var list = normalizeTasks(tasks)
+  var pending = list.filter(function(task) { return isPending(task) })
+  var withDue = pending.filter(function(task) { return !!task.due })
+  if (debugEnabled) console.log("[TaskModel] allUpcomingTasks: total:", list.length, "withDue:", withDue.length)
+  return withDue
+    .sort(function(a, b) {
+      var dueA = String(a.due || '')
+      var dueB = String(b.due || '')
+      return dueA.localeCompare(dueB)
+    })
+}
+
+// Totals for the section headers: same predicates/filters as the list
+// functions but uncapped, so counters report the full category even when the
+// visible list is sliced to a display limit.
+function upcomingTaskCount(tasks) {
+  var list = normalizeTasks(tasks)
+  var pending = list.filter(function(task) { return isPending(task) })
+  var withDue = pending.filter(function(task) { return !!task.due })
+  if (debugEnabled) console.log("[TaskModel] upcomingTaskCount: total:", list.length, "count:", withDue.length)
+  return withDue.length
+}
+
 function backlogTasks(tasks) {
   var list = normalizeTasks(tasks)
   var result = list
@@ -98,6 +124,13 @@ function backlogTasks(tasks) {
     })
   if (debugEnabled) console.log("[TaskModel] backlogTasks: total:", list.length, "result:", result.length)
   return result
+}
+
+function backlogTaskCount(tasks) {
+  var list = normalizeTasks(tasks)
+  var result = list.filter(function(task) { return isPending(task) && !task.due })
+  if (debugEnabled) console.log("[TaskModel] backlogTaskCount: total:", list.length, "count:", result.length)
+  return result.length
 }
 
 function doneTasks(tasks, maxCount) {
@@ -113,6 +146,27 @@ function doneTasks(tasks, maxCount) {
     .slice(0, limit)
   if (debugEnabled) console.log("[TaskModel] doneTasks: total:", list.length, "result:", result.length)
   return result
+}
+
+// Uncapped counterpart of doneTasks: same filter+sort, no slice.
+function allDoneTasks(tasks) {
+  var list = normalizeTasks(tasks)
+  var result = list
+    .filter(function(task) { return isCompleted(task) })
+    .sort(function(a, b) {
+      var completedA = String(a.completed || '')
+      var completedB = String(b.completed || '')
+      return completedB.localeCompare(completedA)
+    })
+  if (debugEnabled) console.log("[TaskModel] allDoneTasks: total:", list.length, "result:", result.length)
+  return result
+}
+
+function doneTaskCount(tasks) {
+  var list = normalizeTasks(tasks)
+  var result = list.filter(function(task) { return isCompleted(task) })
+  if (debugEnabled) console.log("[TaskModel] doneTaskCount: total:", list.length, "count:", result.length)
+  return result.length
 }
 
 function parseHelperResponse(text) {
@@ -225,6 +279,14 @@ function calendarDisplayColor(calendar, colors, index) {
   return DEFAULT_CALENDAR_COLORS[Math.abs(index || 0) % DEFAULT_CALENDAR_COLORS.length]
 }
 
+function colorsMatch(a, b) {
+  var norm = function(v) { return String(v || '').trim().toLowerCase() }
+  var left = norm(a)
+  var right = norm(b)
+  if (!left || !right) return false
+  return left === right
+}
+
 function calendarChoiceLabel(calendar, names) {
   if (!calendar) return 'Calendar'
   return calendarDisplayName(calendar, names) + ' · ' + providerLabel(calendar.provider, calendar.host)
@@ -235,8 +297,13 @@ if (typeof module !== 'undefined') module.exports = {
   isOverdue,
   isPending,
   backlogTasks,
+  backlogTaskCount,
   doneTasks,
+  allDoneTasks,
+  doneTaskCount,
   upcomingTasks,
+  allUpcomingTasks,
+  upcomingTaskCount,
   normalizeTasks,
   normalizedTask,
   parseHelperResponse,
@@ -247,6 +314,7 @@ if (typeof module !== 'undefined') module.exports = {
   providerLabel,
   calendarDisplayName,
   calendarDisplayColor,
+  colorsMatch,
   calendarChoiceLabel,
   DEFAULT_CALENDAR_COLORS
 }
