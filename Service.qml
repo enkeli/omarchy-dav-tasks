@@ -291,18 +291,21 @@ Item {
     // can show create-specific text while update/delete keep "saving". Set
     // after applyTaskCache, which optimistically resets the status to "ready".
     tasksStatus = "adding"
+    // Task content is private: it travels on the helper's stdin (written by
+    // tasksCreateProc.onStarted) so titles, due dates, descriptions, and
+    // categories never appear in /proc/<pid>/cmdline or process listings.
+    tasksCreateProc.secret = JSON.stringify({
+      title: String(title || "(No title)"),
+      due: String(due || ""),
+      priority: (priority !== undefined && priority !== null && String(priority) !== "") ? String(priority) : null,
+      description: description ? String(description) : "",
+      categories: Array.isArray(categories) ? categories.map(function(category) { return String(category) }) : []
+    })
     tasksCreateProc.command = [
       helperPath(), "create-task",
       "--provider", calendarProviderById(targetCalendar),
-      "--calendar-id", targetCalendar,
-      "--title", String(title || "(No title)"),
-      "--due", String(due || "")
+      "--calendar-id", targetCalendar
     ]
-    // Priority is optional: an empty string would trip the helper's int
-    // argparse, so only pass the flag when a priority was chosen.
-    if (priority !== undefined && priority !== null && String(priority) !== "") tasksCreateProc.command.push("--priority", String(priority))
-    if (description) tasksCreateProc.command.push("--description", String(description))
-    if (categories && categories.length > 0) tasksCreateProc.command.push("--categories", categories.join(","))
     tasksCreateProc.running = true
   }
 
@@ -647,7 +650,14 @@ Item {
 
   Process {
     id: tasksCreateProc
+    property string secret: ""
     running: false
+    stdinEnabled: true
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+      stdinEnabled = false
+    }
 
     stdout: StdioCollector { id: tasksCreateOut; waitForEnd: true }
     stderr: StdioCollector { id: tasksCreateErr; waitForEnd: true }

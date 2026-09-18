@@ -106,8 +106,10 @@ Panel {
 
   function close() {
     debugLog("action: panel close")
-    setCenterHoverRevealSuppressed(false)
+    // Hide first: the overlay keeps eating every click while the panel is
+    // open, so nothing after this point may prevent the panel from closing.
     root.controller.hide()
+    setCenterHoverRevealSuppressed(false)
   }
 
   function toggle() { root.opened ? root.close() : root.open() }
@@ -126,7 +128,14 @@ Panel {
   }
 
   function setCenterHoverRevealSuppressed(value) {
-    if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+    // The bar API exposes centerHoverRevealSuppressed as a readonly property
+    // with a setter function. Prefer the setter: assigning the property
+    // directly throws (it is readonly), and a throw here used to abort
+    // close() before controller.hide(), leaving the panel open and its
+    // full-screen dismissal overlay swallowing every click.
+    if (root.bar && typeof root.bar.setCenterHoverRevealSuppressed === "function")
+      root.bar.setCenterHoverRevealSuppressed(value)
+    else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
   }
 

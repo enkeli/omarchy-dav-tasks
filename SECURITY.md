@@ -22,6 +22,10 @@ All CalDAV traffic goes to the server origin configured during account setup. UR
 
 `~/.local/share/omarchy-calendar/` holds the plugin's cache files (`cache.json`, `tasks-cache.json`, `reminders.json`) and `sync.log`. Cache files contain task and calendar metadata, never passwords; they are written atomically with owner-only permissions. `sync.log` is a JSON-lines history of sync activity (calendar names, hostnames, truncated URLs, task uids, sync tokens, and error messages) that rotates to `sync.log.1` once it exceeds 5 MiB. No credentials are written to any of these files.
 
+## Process Boundary
+
+Task content and CalDAV setup secrets never ride in the helper's argument vector, where they would be visible to other local users through `/proc/<pid>/cmdline` and process listings. Mutation payloads (task title, due date, description, categories, priority) and setup credentials are passed on the helper's stdin and are rejected if they exceed their size bounds before any parsing. Only non-sensitive operation selectors (`--provider`, `--calendar-id`, uids, and status values) appear in argv.
+
 ## Reporting
 
 Report security concerns privately through GitHub's "Report a vulnerability" flow on this repository (Security tab) before public disclosure.

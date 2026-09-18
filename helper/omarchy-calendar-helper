@@ -35,6 +35,7 @@ MAX_CALENDARS = 200
 MAX_FIRED = 2000
 MAX_TASK_CATEGORIES = 32
 MAX_TASK_CATEGORY_LENGTH = 120
+MAX_TASK_PAYLOAD_BYTES = 64 * 1024
 
 
 def read_limited_text(path: Path, max_bytes: int) -> str | None:
@@ -3090,6 +3091,45 @@ def parse_optional_int(value: str) -> int:
     return int(text) if text else 0
 
 
+def parse_task_payload(raw: str) -> dict:
+    """Parse a bounded create-task mutation payload read from stdin.
+
+    Task content is private and must never ride in argv, where it would be
+    visible through /proc/<pid>/cmdline and process listings. The payload size
+    is enforced by read_stdin_limited before this function runs; this function
+    only shapes and validates the decoded fields.
+    """
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError("Invalid task payload.") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid task payload.")
+    try:
+        priority = int(payload.get("priority") or 0)
+    except (TypeError, ValueError):
+        priority = 0
+    try:
+        percent = int(payload.get("percentComplete") or 0)
+    except (TypeError, ValueError):
+        percent = 0
+    categories_raw = payload.get("categories")
+    if isinstance(categories_raw, str):
+        categories = sanitize_task_categories(categories_raw.split(","))
+    else:
+        categories = sanitize_task_categories(categories_raw if isinstance(categories_raw, list) else [])
+    return {
+        "title": str(payload.get("title") or ""),
+        "description": str(payload.get("description") or ""),
+        "due": str(payload.get("due") or "") or None,
+        "dtstart": str(payload.get("dtstart") or "") or None,
+        "status": str(payload.get("status") or "needs-action"),
+        "priority": priority,
+        "percent_complete": percent,
+        "categories": categories,
+    }
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
     parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "set-calendar-enabled", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
@@ -3114,7 +3154,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--if-changed", action="store_true")
     parser.add_argument("--status", default="needs-action")
     parser.add_argument("--percent-complete", type=int, default=0)
-    parser.add_argument("--priority", type=parse_optional_int, default=0)
+    parser.add_argument("--priority", type=parse_optional_int, default=None)
     parser.add_argument("--due", default="")
     parser.add_argument("--dtstart", default="")
     args = parser.parse_args(argv)
@@ -3190,16 +3230,23 @@ def main(argv: list[str]) -> int:
         if args.operation == "create-task":
             if args.provider not in ("caldav", "eds", "evolution-data-server"):
                 raise ValueError("create-task currently requires the evolution-data-server or caldav provider.")
-            due = parse_event_instant(args.due) if args.due else None
-            # Tasks take their own --dtstart: the --from window default must
+            # Task content is private: refuse argv-carried fields so callers
+            # cannot leak titles, due dates, descriptions, or categories
+            # through /proc/<pid>/cmdline, and read the complete mutation
+            # payload from bounded stdin instead (as setup-caldav does for
+            # credentials).
+            if args.title or args.description or args.categories or args.due or args.dtstart or args.priority is not None:
+                raise ValueError("create-task task content must be passed via stdin.")
+            task = parse_task_payload(read_stdin_limited(MAX_TASK_PAYLOAD_BYTES))
+            due = parse_event_instant(task["due"]) if task["due"] else None
+            # Tasks take their own dtstart: the --from window default must
             # never leak in as an implicit DTSTART (it stamped every
             # create/update with today's midnight, producing DUE<=DTSTART
             # objects that strict CalDAV servers reject on update).
-            dtstart = parse_event_instant(args.dtstart) if args.dtstart else None
-            categories = sanitize_task_categories(str(args.categories or "").split(","))
+            dtstart = parse_event_instant(task["dtstart"]) if task["dtstart"] else None
             if args.provider == "caldav":
-                return emit_json(create_task_caldav(args.calendar_id, args.title, due, args.description, categories, args.priority, args.status, args.percent_complete, dtstart))
-            return emit_json(create_task_eds(args.calendar_id, args.title, due, args.description, categories, args.priority, args.status, args.percent_complete, dtstart))
+                return emit_json(create_task_caldav(args.calendar_id, task["title"], due, task["description"], task["categories"], task["priority"], task["status"], task["percent_complete"], dtstart))
+            return emit_json(create_task_eds(args.calendar_id, task["title"], due, task["description"], task["categories"], task["priority"], task["status"], task["percent_complete"], dtstart))
         if args.operation == "update-task":
             if not args.uid:
                 raise ValueError("update-task requires --uid.")
@@ -3208,8 +3255,8 @@ def main(argv: list[str]) -> int:
             due = parse_event_instant(args.due) if args.due else None
             dtstart = parse_event_instant(args.dtstart) if args.dtstart else None
             if args.provider == "caldav":
-                return emit_json(update_task_caldav(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
-            return emit_json(update_task_eds(args.calendar_id, args.uid, args.title, due, args.description, args.priority, args.status, args.percent_complete, dtstart))
+                return emit_json(update_task_caldav(args.calendar_id, args.uid, args.title, due, args.description, args.priority or 0, args.status, args.percent_complete, dtstart))
+            return emit_json(update_task_eds(args.calendar_id, args.uid, args.title, due, args.description, args.priority or 0, args.status, args.percent_complete, dtstart))
         if args.operation == "delete-task":
             if not args.uid:
                 raise ValueError("delete-task requires --uid.")
