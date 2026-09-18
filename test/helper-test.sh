@@ -67,21 +67,21 @@ fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper update-event validates uid"
 
-if "$ROOT/helper/omarchy-calendar-helper" create-task --provider evolution-data-server --calendar-id missing --title "Tagged" --due 2026-09-01 --priority 3 --description "Do it" --categories "Work,Home" >"$tmp" 2>/dev/null; then
+if printf '{"title":"Tagged","due":"2026-09-01","priority":3,"description":"Do it","categories":["Work","Home"]}' | "$ROOT/helper/omarchy-calendar-helper" create-task --provider evolution-data-server --calendar-id missing >"$tmp" 2>/dev/null; then
   echo "not ok - create-task without EDS should fail" >&2
   exit 1
 fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper create-task accepts task fields"
 
-if "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing --title "Tagged" --due 2026-09-07 --priority "" >"$tmp" 2>/dev/null; then
+if printf '{"title":"Tagged","due":"2026-09-07","priority":null}' | "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing >"$tmp" 2>/dev/null; then
   echo "not ok - caldav create-task with empty priority should fail later" >&2
   exit 1
 fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper create-task tolerates empty priority"
 
-if "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing --title "Tagged" --categories "Work,Home" >"$tmp" 2>/dev/null; then
+if printf '{"title":"Tagged","categories":["Work","Home"]}' | "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing >"$tmp" 2>/dev/null; then
   echo "not ok - caldav create-task without calendar should fail" >&2
   exit 1
 fi
@@ -101,6 +101,27 @@ if "$ROOT/helper/omarchy-calendar-helper" create-task --provider mock --calendar
 fi
 jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
 echo "ok - helper create-task rejects non-task providers"
+
+if "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing --title "Tagged" >"$tmp" 2>/dev/null; then
+  echo "not ok - create-task with argv task content should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed" and (.error.message | contains("stdin"))' "$tmp" >/dev/null
+echo "ok - helper create-task rejects argv task content"
+
+if printf '{"title":"Tagged"' | "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing >"$tmp" 2>/dev/null; then
+  echo "not ok - create-task with malformed payload should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.code == "operation-failed"' "$tmp" >/dev/null
+echo "ok - helper create-task rejects malformed stdin payload"
+
+if { printf '{"title":"'; head -c 70000 /dev/zero | tr '\0' 'a'; } | "$ROOT/helper/omarchy-calendar-helper" create-task --provider caldav --calendar-id missing >"$tmp" 2>/dev/null; then
+  echo "not ok - create-task with oversized payload should fail" >&2
+  exit 1
+fi
+jq -e '.ok == false and .error.message == "Request was too large."' "$tmp" >/dev/null
+echo "ok - helper create-task rejects oversized stdin payload"
 
 python3 -c 'from importlib.machinery import SourceFileLoader; import sys; mod = SourceFileLoader("omarchy_calendar_helper", sys.argv[1]).load_module(); assert mod.normalize_rrule("never") == ""; assert mod.normalize_rrule("weekly") == "FREQ=WEEKLY"; assert mod.normalize_rrule("FREQ=WEEKLY;BYDAY=TU,TH") == "FREQ=WEEKLY;BYDAY=TU,TH"; assert mod.normalize_rrule("RRULE:FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1") == "FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1"; print("ok - helper rrule normalize")' "$ROOT/helper/omarchy-calendar-helper"
 
