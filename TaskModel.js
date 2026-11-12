@@ -30,6 +30,7 @@ function normalizedTask(raw) {
     uid: String(task.uid || ''),
     title: plainDisplay(task.title || task.summary || '(No title)', 400) || '(No title)',
     due: String(task.due || ''),
+    start: String(task.start || ''),
     completed: String(task.completed || ''),
     status: String(task.status || 'NEEDS-ACTION'),
     priority: String(task.priority || ''),
@@ -50,6 +51,20 @@ function normalizeTasks(tasks) {
   var result = tasks.map(normalizedTask).filter(function(task) { return task.id })
   if (debugEnabled) console.log("[TaskModel] normalizeTasks: input:", tasks.length, "output:", result.length)
   return result
+}
+
+// Case-insensitive keyword filter for the keyboard "/" search: every
+// whitespace-separated word must appear in the title, description, calendar
+// name or a category. An empty query returns the list untouched.
+function filterTasks(tasks, query) {
+  var words = String(query == null ? '' : query).toLowerCase().split(/\s+/).filter(function(word) { return word !== '' })
+  if (!Array.isArray(tasks) || words.length === 0) return tasks
+  return tasks.filter(function(task) {
+    if (!task) return false
+    var haystack = [task.title, task.description, task.calendarName, (task.categories || []).join(' ')].join(' ').toLowerCase()
+    for (var i = 0; i < words.length; i++) if (haystack.indexOf(words[i]) < 0) return false
+    return true
+  })
 }
 
 function isOverdue(task, now) {
@@ -189,9 +204,9 @@ function parseHelperResponse(text) {
   }
 }
 
-function formatDueDate(task, timeFormat) {
-  if (!task || !task.due) return ''
-  var date = parseDateTime(task.due)
+// "Mon d" this year, "Mon d, YYYY" otherwise, for any stored task date.
+function formatTaskDate(value) {
+  var date = parseDateTime(value)
   if (!date) return ''
   var month = SHORT_MONTH_NAMES[date.getMonth()]
   var day = date.getDate()
@@ -199,6 +214,89 @@ function formatDueDate(task, timeFormat) {
   var now = new Date()
   if (year === now.getFullYear()) return month + ' ' + day
   return month + ' ' + day + ', ' + year
+}
+
+function formatDueDate(task, timeFormat) {
+  if (!task || !task.due) return ''
+  return formatTaskDate(task.due)
+}
+
+function formatStartDate(task) {
+  if (!task || !task.start) return ''
+  return formatTaskDate(task.start)
+}
+
+// --- Typed date input -------------------------------------------------------
+// The due and starts-by fields take a date in the user's locale (the shell passes
+// Qt's short date pattern in). This is only the fallback when none is given:
+// ISO order is unambiguous on every locale.
+var DATE_INPUT_PATTERN = 'yyyy-MM-dd'
+
+function padTwo(value) {
+  var s = String(value)
+  return s.length < 2 ? '0' + s : s
+}
+
+// Placeholder text such as "DD.MM.YYYY" for a pattern.
+function dateInputHint(pattern) {
+  return String(pattern || DATE_INPUT_PATTERN).replace(/d+/g, 'DD').replace(/M+/g, 'MM').replace(/y+/g, 'YYYY')
+}
+
+// Typed text -> day key 'YYYY-MM-DD', or '' when it is not a real date.
+// Accepts separators (space . / - ,), a missing year (current year), two-digit
+// years, and eight digits with no separators.
+function parseDateInput(text, pattern, now) {
+  var s = String(text == null ? '' : text).replace(/^\s+|\s+$/g, '')
+  var order = (pattern || DATE_INPUT_PATTERN).match(/[dMy]+/g) || []
+  order = order.map(function (token) { return token.charAt(0) })
+  var parts = null
+  var fields = order
+  if (/^\d{8}$/.test(s) && order.length === 3) {
+    parts = []
+    var at = 0
+    for (var k = 0; k < order.length; k++) {
+      var width = order[k] === 'y' ? 4 : 2
+      parts.push(s.substr(at, width))
+      at += width
+    }
+  } else if (/^\d+([\s.\/\-,]+\d+){1,2}$/.test(s)) {
+    parts = s.split(/[\s.\/\-,]+/)
+    if (parts.length === 2) fields = order.filter(function (f) { return f !== 'y' })
+    if (parts.length !== fields.length) return ''
+  }
+  if (!parts || parts.length !== fields.length) return ''
+  var values = {}
+  var year = now ? now.getFullYear() : new Date().getFullYear()
+  for (var i = 0; i < fields.length; i++) {
+    if (fields[i] === 'y') {
+      if (parts[i].length === 3 || parts[i].length > 4) return ''
+      year = parseInt(parts[i], 10)
+      if (parts[i].length <= 2) year += 2000
+    } else {
+      values[fields[i]] = parseInt(parts[i], 10)
+    }
+  }
+  var day = values.d
+  var month = values.M
+  if (year < 1000 || !(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return ''
+  var date = new Date(year, month - 1, day)
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return ''
+  return year + '-' + padTwo(month) + '-' + padTwo(day)
+}
+
+// Day key 'YYYY-MM-DD' -> text in the pattern, or '' for an empty key.
+function formatDateInput(key, pattern) {
+  var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''))
+  if (!match) return ''
+  var year = parseInt(match[1], 10)
+  var month = parseInt(match[2], 10)
+  var day = parseInt(match[3], 10)
+  return (pattern || DATE_INPUT_PATTERN).replace(/d+|M+|y+/g, function (token) {
+    var letter = token.charAt(0)
+    if (letter === 'y') return token.length === 2 ? padTwo(year % 100) : String(year)
+    var value = letter === 'd' ? day : month
+    return token.length === 2 ? padTwo(value) : String(value)
+  })
 }
 
 function formatCompletedDate(task, timeFormat) {
@@ -292,6 +390,39 @@ function calendarChoiceLabel(calendar, names) {
   return calendarDisplayName(calendar, names) + ' · ' + providerLabel(calendar.provider, calendar.host)
 }
 
+// Packs measured rows into wide-view columns of at most `budget` pixels, with
+// `gap` pixels between rows. heights[i] is the rendered height of tasks[i];
+// heights can be shorter than tasks while later rows are still unmeasured.
+// Returns { status: 'pending' } while a measured row has not laid out yet,
+// { status: 'grow' } when more rows must be measured to fill the columns, or
+// { status: 'ok', pages } with at most `cap` columns.
+function packWideColumns(tasks, heights, budget, gap, cap, canGrow) {
+  var out = []
+  var page = []
+  var used = 0
+  var unmeasured = false
+  for (var i = 0; i < tasks.length; i++) {
+    if (i >= heights.length) {
+      unmeasured = true
+      break
+    }
+    var height = heights[i]
+    if (!(height > 0)) return { status: 'pending' }
+    var cost = height + gap
+    if (page.length > 0 && used + cost > budget) {
+      out.push(page)
+      page = []
+      used = 0
+      if (out.length >= cap) break
+    }
+    page.push(tasks[i])
+    used += cost
+  }
+  if (unmeasured && out.length < cap && canGrow) return { status: 'grow' }
+  if (page.length > 0 && out.length < cap) out.push(page)
+  return { status: 'ok', pages: out }
+}
+
 if (typeof module !== 'undefined') module.exports = {
   isCompleted,
   isOverdue,
@@ -306,9 +437,16 @@ if (typeof module !== 'undefined') module.exports = {
   upcomingTaskCount,
   normalizeTasks,
   normalizedTask,
+  filterTasks,
+  packWideColumns,
   parseHelperResponse,
   formatDueDate,
+  formatStartDate,
   formatCompletedDate,
+  DATE_INPUT_PATTERN,
+  dateInputHint,
+  parseDateInput,
+  formatDateInput,
   canToggleCalendar,
   serverConnections,
   providerLabel,

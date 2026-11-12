@@ -17,8 +17,14 @@ PROVIDER = "evolution-data-server"
 DATA = Path.home() / ".local/share/omarchy-calendar"
 BACKUP = DATA / "demo-backup"
 STATE = DATA / "demo-state.json"
+# Files in DATA that the shell and the demo can change. The backup manifest
+# records which of these existed before seeding, so restore can put back the
+# real ones and delete the ones that only exist because of the demo.
+FILES = ("cache.json", "tasks-cache.json", "reminders.json", "sync.log")
+MANIFEST = BACKUP / "manifest.json"
 EVO_SOURCES = Path.home() / ".config/evolution/sources"
 EVO_CALENDARS = Path.home() / ".local/share/evolution/calendar"
+EVO_TASKS = Path.home() / ".local/share/evolution/tasks"
 
 DEMO = [
     ("Work", "#89b4fa"),
@@ -127,30 +133,35 @@ def adopt_legacy_backup():
 
 
 def backup_real():
-    if (BACKUP / "cache.json").exists():
-        return
-    if adopt_legacy_backup():
+    # Only the first seed records the real state. Later seeds must not copy the
+    # demo state over it, so the manifest is the guard.
+    if MANIFEST.exists():
         return
     BACKUP.mkdir(parents=True, exist_ok=True)
-    if EVO_SOURCES.exists():
-        shutil.copytree(EVO_SOURCES, BACKUP / "sources", dirs_exist_ok=True)
-    if EVO_CALENDARS.exists():
-        shutil.copytree(EVO_CALENDARS, BACKUP / "calendar", dirs_exist_ok=True)
-    if DATA.exists():
-        for name in ("cache.json", "reminders.json", "sync.log"):
+    if adopt_legacy_backup():
+        absent = []
+    else:
+        if EVO_SOURCES.exists():
+            shutil.copytree(EVO_SOURCES, BACKUP / "sources", dirs_exist_ok=True)
+        if EVO_CALENDARS.exists():
+            shutil.copytree(EVO_CALENDARS, BACKUP / "calendar", dirs_exist_ok=True)
+        for name in FILES:
             src = DATA / name
             if src.exists():
                 shutil.copy2(src, BACKUP / name)
+        absent = [name for name in FILES if not (DATA / name).exists()]
+    present = [name for name in FILES if (BACKUP / name).exists()]
+    MANIFEST.write_text(json.dumps({"files": present, "absent": absent}, indent=2) + "\n")
 
 
-def restore_cache():
-    if not (BACKUP / "cache.json").exists():
-        return
+def restore_files():
+    manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {"files": [], "absent": []}
     DATA.mkdir(parents=True, exist_ok=True)
-    for name in ("cache.json", "reminders.json", "sync.log"):
-        src = BACKUP / name
-        if src.exists():
-            shutil.copy2(src, DATA / name)
+    for name in manifest.get("files") or []:
+        shutil.copy2(BACKUP / name, DATA / name)
+    for name in manifest.get("absent") or []:
+        (DATA / name).unlink(missing_ok=True)
+    MANIFEST.unlink(missing_ok=True)
 
 
 def local_now():
@@ -218,7 +229,7 @@ def ensure_calendars():
                 stdin=json.dumps({"calendars": [{"id": existing["id"], "name": name, "color": color}]}),
             )
             continue
-        created = helper(["create-local-calendar", "--provider", PROVIDER, "--title", name])
+        created = helper(["create-local-calendar", "--provider", PROVIDER, "--title", name, "--tasks"])
         calendar_id = created["calendar"]["id"]
         helper(
             ["update-calendars", "--provider", PROVIDER],
@@ -275,6 +286,32 @@ def seed_events(ids):
     write_ics(ids["Home"], home)
 
 
+def seed_tasks(ids):
+    today = local_now().date()
+
+    def due(days):
+        return (today + timedelta(days=days)).isoformat()
+
+    samples = {
+        "Work": [
+            {"title": "Prepare sprint demo", "due": due(3), "priority": 1, "categories": ["Work"]},
+            {"title": "Review open pull requests", "due": due(1), "categories": ["Work"]},
+            {"title": "Update project roadmap", "due": due(10), "priority": 5, "categories": ["Work"]},
+        ],
+        "Personal": [
+            {"title": "Book dentist appointment", "due": due(5), "priority": 2, "categories": ["Personal"]},
+            {"title": "Buy birthday gift", "due": due(12), "categories": ["Personal"]},
+        ],
+        "Home": [
+            {"title": "Water the plants", "due": due(0), "categories": ["Home"]},
+            {"title": "Replace the water filter", "due": due(20), "categories": ["Home"]},
+        ],
+    }
+    for name, tasks in samples.items():
+        for task in tasks:
+            helper(["create-task", "--provider", PROVIDER, "--calendar-id", ids[name]], stdin=json.dumps(task))
+
+
 def wipe_demo_cache(ids):
     DATA.mkdir(parents=True, exist_ok=True)
     calendars = [{"id": ids[name], "name": name, "color": color, "provider": PROVIDER, "host": "", "source": "Evolution Data Server", "readonly": False} for name, color in DEMO]
@@ -285,6 +322,16 @@ def wipe_demo_cache(ids):
         "events": [],
         "syncState": {},
         "localTouches": {},
+        "rev": 1,
+    }) + "\n")
+    # The panel reads its tasks from tasks-cache.json and keeps entries from
+    # disabled CalDAV sources, so clear the real tasks here. The demo tasks come
+    # from the sync after the shell restarts. Restore puts the real file back.
+    (DATA / "tasks-cache.json").write_text(json.dumps({
+        "ok": True,
+        "provider": PROVIDER,
+        "tasks": [],
+        "cachedAt": datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "rev": 1,
     }) + "\n")
 
@@ -320,6 +367,7 @@ def cmd_seed():
                     disabled.append(uid)
     ids = ensure_calendars()
     seed_events(ids)
+    seed_tasks(ids)
     wipe_demo_cache(ids)
     snapshot_window()
     save_state({"disabledCaldav": disabled, "demoCalendars": [ids[name] for name, _color in DEMO], "calendars": ids})
@@ -335,9 +383,11 @@ def cmd_restore():
     reg, _EDataServer = registry()
     for uid in state.get("demoCalendars") or []:
         remove_source(reg, uid)
+        shutil.rmtree(EVO_CALENDARS / uid, ignore_errors=True)
+        shutil.rmtree(EVO_TASKS / uid, ignore_errors=True)
     for uid in state.get("disabledCaldav") or []:
         set_enabled(reg, uid, True)
-    restore_cache()
+    restore_files()
     STATE.unlink(missing_ok=True)
     print("real calendars restored")
     print("omarchy restart shell")

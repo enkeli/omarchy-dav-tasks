@@ -1287,6 +1287,239 @@ def caldav_vtodo_updated_document(text: str, title: str, due: datetime | None, d
     return "\r\n".join(lines) + "\r\n"
 
 
+EDITABLE_TASK_FIELDS = ("title", "description", "due", "dtstart", "categories", "priority")
+
+
+def parse_task_edit_payload(raw: str, allow_empty: bool = False) -> dict:
+    """Parse an edit-task payload read from stdin.
+
+    Only keys present in the payload are changed; an empty string, empty list
+    or priority 0 clears the property. Like create-task, task content never
+    travels in argv.
+    """
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError("Invalid task payload.") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid task payload.")
+    edits: dict = {}
+    if "title" in payload:
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise ValueError("A task needs a title.")
+        edits["title"] = title
+    if "description" in payload:
+        edits["description"] = str(payload.get("description") or "")
+    if "due" in payload:
+        edits["due"] = str(payload.get("due") or "")
+    if "dtstart" in payload:
+        edits["dtstart"] = str(payload.get("dtstart") or "")
+    if "categories" in payload:
+        raw_categories = payload.get("categories")
+        if isinstance(raw_categories, str):
+            raw_categories = raw_categories.split(",")
+        edits["categories"] = sanitize_task_categories(raw_categories if isinstance(raw_categories, list) else [])
+    if "priority" in payload:
+        try:
+            edits["priority"] = max(0, min(9, int(payload.get("priority") or 0)))
+        except (TypeError, ValueError):
+            edits["priority"] = 0
+    if not edits and not allow_empty:
+        raise ValueError("edit-task needs at least one field to change.")
+    return edits
+
+
+def vtodo_edited_document(text: str, edits: dict) -> str:
+    """Apply `edits` to a stored VTODO, carrying over every other property."""
+    unfolded = unfold_ical_lines(text)
+    now = datetime.now(UTC)
+    # property name -> replacement line; None removes the property entirely.
+    changes: dict[str, str | None] = {"LAST-MODIFIED": f"LAST-MODIFIED:{ics_datetime(now, False)}"}
+    if "title" in edits:
+        changes["SUMMARY"] = f"SUMMARY:{ics_escape(edits['title'])}"
+    if "description" in edits:
+        changes["DESCRIPTION"] = f"DESCRIPTION:{ics_escape(edits['description'])}" if edits["description"] else None
+    due = None
+    if "due" in edits:
+        due = parse_event_instant(edits["due"]) if edits["due"] else None
+        changes["DUE"] = f"DUE:{ics_datetime(due, False)}" if due else None
+    explicit_start = "dtstart" in edits
+    if explicit_start:
+        start = parse_event_instant(edits["dtstart"]) if edits["dtstart"] else None
+        changes["DTSTART"] = f"DTSTART:{ics_datetime(start, False)}" if start else None
+        if start is not None:
+            stored_due = due
+            if stored_due is None and "due" not in edits:
+                for line in unfolded:
+                    if line.split(":", 1)[0].split(";", 1)[0].strip().upper() == "DUE" and ":" in line:
+                        stored_due = parse_ical_datetime(line.split(":", 1)[1].strip())
+                        break
+            if stored_due is not None and start >= stored_due:
+                raise ValueError("Starts by must be before the due date.")
+    if "categories" in edits:
+        cats = edits["categories"]
+        changes["CATEGORIES"] = f"CATEGORIES:{','.join(ics_escape(c) for c in cats)}" if cats else None
+    if "priority" in edits:
+        changes["PRIORITY"] = f"PRIORITY:{edits['priority']}" if edits["priority"] > 0 else None
+    # Strict CalDAV servers reject DUE that does not come after DTSTART; when
+    # the edit moves DUE to or before the stored DTSTART, drop that DTSTART.
+    if due is not None and not explicit_start:
+        for line in unfolded:
+            name = line.split(":", 1)[0].split(";", 1)[0].strip().upper()
+            if name == "DTSTART" and ":" in line:
+                start = parse_ical_datetime(line.split(":", 1)[1].strip())
+                if start is not None and due <= start:
+                    changes["DTSTART"] = None
+                break
+    replaced: set[str] = set()
+    lines = []
+    nested = 0  # inside a sub-component such as VALARM: its properties are not the task's
+    for line in unfolded:
+        upper = line.strip().upper()
+        if upper.startswith("BEGIN:") and upper not in ("BEGIN:VCALENDAR", "BEGIN:VTODO"):
+            nested += 1
+        elif upper.startswith("END:") and upper not in ("END:VCALENDAR", "END:VTODO"):
+            nested = max(0, nested - 1)
+        name = line.split(":", 1)[0].split(";", 1)[0].strip().upper()
+        if nested == 0 and name in changes:
+            replacement = changes[name]
+            if replacement is not None and name not in replaced:
+                lines.append(replacement)
+            replaced.add(name)
+            continue
+        lines.append(line)
+    insert_at = len(lines)
+    for index, line in enumerate(lines):
+        if line.strip().upper() == "END:VTODO":
+            insert_at = index
+            break
+    for name, replacement in changes.items():
+        if replacement is not None and name not in replaced:
+            lines.insert(insert_at, replacement)
+            insert_at += 1
+    return "\r\n".join(lines) + "\r\n"
+
+
+def edit_task_caldav(calendar_id: str, uid: str, edits: dict) -> dict:
+    if not uid:
+        raise ValueError("edit-task requires --uid.")
+    modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
+    resource = caldav_task_resource(href, uid)
+    status_code, raw, _headers = caldav_http("GET", resource, username, password, b"", {}, base_url=href)
+    if status_code != 200 or not raw:
+        raise ValueError(f"Task not found: {uid} (status {status_code}).")
+    document = vtodo_edited_document(raw.decode("utf-8", "replace"), edits)
+    status_code, body, _headers = caldav_http(
+        "PUT",
+        resource,
+        username,
+        password,
+        document.encode("utf-8"),
+        {"Content-Type": "text/calendar; charset=utf-8"},
+        base_url=href,
+    )
+    if status_code not in (200, 201, 204):
+        detail = caldav_error_detail(body)
+        sync_log("task-edit-failed", calendarId=calendar["id"], uid=uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task edit failed with status {status_code}{suffix}.")
+    task = caldav_component_task(caldav_component_from_text(document, modules), calendar, uid)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "caldav", "calendar": calendar, "task": task, "uid": uid}
+
+
+def edit_task_eds(calendar_id: str, uid: str, edits: dict) -> dict:
+    if not uid:
+        raise ValueError("edit-task requires --uid.")
+    modules, registry, source, client = eds_client_for_tasks(calendar_id)
+    if client.is_readonly():
+        raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
+    ok, existing = client.get_object_sync(uid, None, None)
+    if not ok or existing is None:
+        raise ValueError(f"Task not found: {uid}")
+    document = vtodo_edited_document(existing.as_ical_string(), edits)
+    updated = modules.ICalGLib.Component.new_from_string(document)
+    if not updated:
+        raise ValueError("Failed to build the edited task.")
+    ok = client.modify_object_sync(updated, modules.ECal.ObjModType.ALL, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
+    if not ok:
+        raise ValueError("EDS modify_object_sync returned false.")
+    calendar = source_calendar(source, registry, modules)
+    calendar["readonly"] = False
+    component = modules.ECal.Component.new_from_icalcomponent(updated.clone())
+    task = component_task(component, calendar, modules, client)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "evolution-data-server", "calendar": calendar, "task": task, "uid": uid}
+
+
+def retitle_vtodo_uid(document: str, uid: str) -> str:
+    """Give a serialized VTODO a new UID line (used when a task moves calendars)."""
+    return re.sub(r"(?m)^UID(?:;[^:\r\n]*)?:[^\r\n]*", f"UID:{uid}", document, count=1)
+
+
+def move_task_eds(calendar_id: str, dest_id: str, uid: str, edits: dict) -> dict:
+    """Copy a task into another EDS task list with `edits` applied, then delete the original."""
+    if not uid:
+        raise ValueError("edit-task requires --uid.")
+    modules, registry, source, client = eds_client_for_tasks(calendar_id)
+    if client.is_readonly():
+        raise ValueError(f"Calendar is read-only: {source.get_display_name()}")
+    ok, existing = client.get_object_sync(uid, None, None)
+    if not ok or existing is None:
+        raise ValueError(f"Task not found: {uid}")
+    dest_modules, dest_registry, dest_source, dest_client = eds_client_for_tasks(dest_id)
+    if dest_client.is_readonly():
+        raise ValueError(f"Calendar is read-only: {dest_source.get_display_name()}")
+    new_uid = f"omarchy-calendar-{uuid4()}"
+    document = retitle_vtodo_uid(vtodo_edited_document(existing.as_ical_string(), edits), new_uid)
+    updated = modules.ICalGLib.Component.new_from_string(document)
+    if not updated:
+        raise ValueError("Failed to build the moved task.")
+    ok, _created = dest_client.create_object_sync(updated, modules.ECal.OperationFlags.DISABLE_ITIP_MESSAGE, None)
+    if not ok:
+        raise ValueError("EDS create_object_sync returned false.")
+    delete_task_eds(calendar_id, uid)
+    calendar = source_calendar(dest_source, dest_registry, modules)
+    calendar["readonly"] = False
+    component = modules.ECal.Component.new_from_icalcomponent(updated.clone())
+    task = component_task(component, calendar, modules, dest_client)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "evolution-data-server", "calendar": calendar, "task": task, "uid": new_uid, "fromUid": uid}
+
+
+def move_task_caldav(calendar_id: str, dest_id: str, uid: str, edits: dict) -> dict:
+    """Copy a CalDAV task into another collection with `edits` applied, then delete the original."""
+    if not uid:
+        raise ValueError("edit-task requires --uid.")
+    modules, registry, source, calendar, href, username, password = caldav_task_session(calendar_id)
+    resource = caldav_task_resource(href, uid)
+    status_code, raw, _headers = caldav_http("GET", resource, username, password, b"", {}, base_url=href)
+    if status_code != 200 or not raw:
+        raise ValueError(f"Task not found: {uid} (status {status_code}).")
+    _dest_modules, _dest_registry, _dest_source, dest_calendar, dest_href, dest_username, dest_password = caldav_task_session(dest_id)
+    new_uid = f"omarchy-calendar-{uuid4()}"
+    document = retitle_vtodo_uid(vtodo_edited_document(raw.decode("utf-8", "replace"), edits), new_uid)
+    status_code, body, _headers = caldav_http(
+        "PUT",
+        caldav_task_resource(dest_href, new_uid),
+        dest_username,
+        dest_password,
+        document.encode("utf-8"),
+        {"Content-Type": "text/calendar; charset=utf-8"},
+        base_url=dest_href,
+    )
+    if status_code not in (200, 201, 204):
+        detail = caldav_error_detail(body)
+        sync_log("task-move-failed", calendarId=dest_calendar["id"], uid=new_uid, status=status_code, detail=detail[:120])
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"CalDAV task move failed with status {status_code}{suffix}.")
+    delete_task_caldav(calendar_id, uid)
+    task = caldav_component_task(caldav_component_from_text(document, modules), dest_calendar, new_uid)
+    merge_cache_task(task)
+    return {"ok": True, "provider": "caldav", "calendar": dest_calendar, "task": task, "uid": new_uid, "fromUid": uid}
+
+
 def caldav_component_from_text(text: str, modules: EdsModules):
     """Parse a stored resource back into an ECal.Component wrapping the VTODO."""
     root = modules.ICalGLib.Component.new_from_string(text)
@@ -2485,7 +2718,12 @@ def _write_shell_config(path: Path, data: dict) -> None:
 
 
 def ensure_right_anchor(plugin_id: str) -> dict:
-    """Ensure the plugin appears in the right bar section (idempotent, no clock interference)."""
+    """Ensure the plugin appears somewhere in the bar (idempotent).
+
+    Only adds the right-section entry when the widget is in no section at all:
+    a user who deliberately placed it on the left or in the center must not get
+    a second copy re-added on every shell start.
+    """
     plugin_id = str(plugin_id or "").strip()
     path = shell_config_path()
     if not plugin_id or not path.is_file():
@@ -2502,21 +2740,24 @@ def ensure_right_anchor(plugin_id: str) -> dict:
         layout = {}
         bar["layout"] = layout
 
+    placed = {
+        section: [_bar_entry_id(e) for e in entries]
+        for section, entries in layout.items()
+        if isinstance(entries, list)
+    }
+    print(f"[tasks-widget] ensure_right_anchor path={path} plugin_id={plugin_id} layout={placed}", file=sys.stderr)
+    if any(plugin_id in ids for ids in placed.values()):
+        print("[tasks-widget] ensure_right_anchor already present", file=sys.stderr)
+        return {"ok": True, "changed": False}
+
     right_entries = layout.get("right")
     if not isinstance(right_entries, list):
         right_entries = []
         layout["right"] = right_entries
-
-    existing_ids = [_bar_entry_id(e) for e in right_entries]
-    print(f"[tasks-widget] ensure_right_anchor path={path} plugin_id={plugin_id} right={existing_ids}", file=sys.stderr)
-    if plugin_id not in existing_ids:
-        right_entries.append({"id": plugin_id})
-        _write_shell_config(path, data)
-        print(f"[tasks-widget] ensure_right_anchor wrote {plugin_id} into right", file=sys.stderr)
-        return {"ok": True, "changed": True}
-
-    print("[tasks-widget] ensure_right_anchor already present", file=sys.stderr)
-    return {"ok": True, "changed": False}
+    right_entries.append({"id": plugin_id})
+    _write_shell_config(path, data)
+    print(f"[tasks-widget] ensure_right_anchor wrote {plugin_id} into right", file=sys.stderr)
+    return {"ok": True, "changed": True}
 
 
 def reminders_file() -> Path:
@@ -2987,7 +3228,7 @@ def remove_calendar_from_cache(calendar_id: str) -> None:
             write_tasks_cache(tasks, bump=False)
 
 
-def eds_create_local_calendar(display_name: str) -> dict:
+def eds_create_local_calendar(display_name: str, with_tasks: bool = False) -> dict:
     name = str(display_name or "").strip() or "Calendar"
     modules = load_eds_modules()
     registry = modules.EDataServer.SourceRegistry.new_sync(None)
@@ -3000,6 +3241,9 @@ def eds_create_local_calendar(display_name: str) -> dict:
     calendar.set_backend_name("local")
     if hasattr(calendar, "set_selected"):
         calendar.set_selected(True)
+    if with_tasks:
+        task_list = source.get_extension(modules.EDataServer.SOURCE_EXTENSION_TASK_LIST)
+        task_list.set_backend_name("local")
     source = commit_new_source(registry, source)
     if source is None:
         raise ValueError("Failed to create a local calendar.")
@@ -3132,7 +3376,7 @@ def parse_task_payload(raw: str) -> dict:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Return normalized calendar data as JSON")
-    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "set-calendar-enabled", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "delete-task", "tasks-save-cache"])
+    parser.add_argument("operation", choices=["snapshot", "list-calendars", "create-event", "update-event", "delete-event", "setup-caldav", "create-local-calendar", "update-calendars", "remove-calendar", "set-calendar-enabled", "reminders-state", "reminders-save", "ensure-right-anchor", "list-tasks", "create-task", "update-task", "edit-task", "delete-task", "tasks-save-cache"])
     parser.add_argument("--provider", default=os.environ.get("OMARCHY_CALENDAR_PROVIDER", "mock"))
     parser.add_argument("--from", dest="start", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)))
     parser.add_argument("--to", dest="end", default=iso(datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=31)))
@@ -3140,6 +3384,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--to-calendar-id", default="")
     parser.add_argument("--enabled", default="true")
     parser.add_argument("--title", default="")
+    parser.add_argument("--tasks", action="store_true", help="create-local-calendar also backs the source with a local task list")
     parser.add_argument("--location", default="")
     parser.add_argument("--description", default="")
     parser.add_argument("--categories", default="")
@@ -3200,7 +3445,7 @@ def main(argv: list[str]) -> int:
         if args.operation == "create-local-calendar":
             if args.provider not in ("eds", "evolution-data-server"):
                 raise ValueError("create-local-calendar currently requires the evolution-data-server provider.")
-            return emit_json(eds_create_local_calendar(args.title))
+            return emit_json(eds_create_local_calendar(args.title, args.tasks))
         if args.operation == "remove-calendar":
             if not args.calendar_id:
                 raise ValueError("remove-calendar requires --calendar-id.")
@@ -3244,6 +3489,8 @@ def main(argv: list[str]) -> int:
             # create/update with today's midnight, producing DUE<=DTSTART
             # objects that strict CalDAV servers reject on update).
             dtstart = parse_event_instant(task["dtstart"]) if task["dtstart"] else None
+            if dtstart is not None and due is not None and dtstart >= due:
+                raise ValueError("Starts by must be before the due date.")
             if args.provider == "caldav":
                 return emit_json(create_task_caldav(args.calendar_id, task["title"], due, task["description"], task["categories"], task["priority"], task["status"], task["percent_complete"], dtstart))
             return emit_json(create_task_eds(args.calendar_id, task["title"], due, task["description"], task["categories"], task["priority"], task["status"], task["percent_complete"], dtstart))
@@ -3257,6 +3504,21 @@ def main(argv: list[str]) -> int:
             if args.provider == "caldav":
                 return emit_json(update_task_caldav(args.calendar_id, args.uid, args.title, due, args.description, args.priority or 0, args.status, args.percent_complete, dtstart))
             return emit_json(update_task_eds(args.calendar_id, args.uid, args.title, due, args.description, args.priority or 0, args.status, args.percent_complete, dtstart))
+        if args.operation == "edit-task":
+            if not args.uid:
+                raise ValueError("edit-task requires --uid.")
+            if args.provider not in ("caldav", "eds", "evolution-data-server"):
+                raise ValueError("edit-task currently requires the evolution-data-server or caldav provider.")
+            dest = str(args.to_calendar_id or "").strip()
+            moving = bool(dest) and dest != args.calendar_id
+            edits = parse_task_edit_payload(read_stdin_limited(MAX_TASK_PAYLOAD_BYTES), allow_empty=moving)
+            if moving and args.provider == "caldav":
+                return emit_json(move_task_caldav(args.calendar_id, dest, args.uid, edits))
+            if moving:
+                return emit_json(move_task_eds(args.calendar_id, dest, args.uid, edits))
+            if args.provider == "caldav":
+                return emit_json(edit_task_caldav(args.calendar_id, args.uid, edits))
+            return emit_json(edit_task_eds(args.calendar_id, args.uid, edits))
         if args.operation == "delete-task":
             if not args.uid:
                 raise ValueError("delete-task requires --uid.")

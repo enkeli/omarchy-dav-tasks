@@ -27,6 +27,20 @@ assert.equal(model.normalizeTasks([{ id: '1', title: 'A' }, { id: '2', title: 'B
 assert.equal(model.normalizeTasks([{ id: '1', title: 'A' }, { title: 'No id' }]).length, 1)
 assert.equal(model.normalizeTasks([{ id: '1', title: 'A' }, { id: '2', title: 'B' }])[0].id, '1')
 
+// filterTasks
+const filterSample = [
+  { title: 'Buy milk', description: 'oat drink', calendarName: 'Home', categories: ['errands'] },
+  { title: 'Write report', description: '', calendarName: 'Work', categories: ['office', 'urgent'] }
+]
+assert.equal(model.filterTasks(filterSample, '').length, 2)
+assert.equal(model.filterTasks(filterSample, '   ').length, 2)
+assert.equal(model.filterTasks(filterSample, 'MILK').length, 1)
+assert.equal(model.filterTasks(filterSample, 'oat').length, 1)
+assert.equal(model.filterTasks(filterSample, 'work report').length, 1)
+assert.equal(model.filterTasks(filterSample, 'urgent').length, 1)
+assert.equal(model.filterTasks(filterSample, 'milk report').length, 0)
+assert.deepEqual(model.filterTasks(null, 'x'), null)
+
 // isOverdue
 assert.equal(model.isOverdue(null), false)
 assert.equal(model.isOverdue({}), false)
@@ -282,3 +296,47 @@ assert.equal(model.calendarDisplayColor(null, {}, 5), '#8aadf4')
 assert.equal(model.calendarDisplayColor({ id: 'c1' }, {}, -1), '#a6e3a1')
 
 console.log('ok - task model')
+// typed date input (the pattern comes from the user's locale)
+const dePattern = 'dd.MM.yyyy'
+const inputNow = new Date(2026, 4, 1)
+assert.equal(model.DATE_INPUT_PATTERN, 'yyyy-MM-dd')
+assert.equal(model.dateInputHint(model.DATE_INPUT_PATTERN), 'YYYY-MM-DD')
+assert.equal(model.dateInputHint(dePattern), 'DD.MM.YYYY')
+assert.equal(model.parseDateInput('5.6.2026', dePattern, inputNow), '2026-06-05')
+assert.equal(model.parseDateInput(' 05.06.26 ', dePattern, inputNow), '2026-06-05')
+assert.equal(model.parseDateInput('5/6', dePattern, inputNow), '2026-06-05')
+assert.equal(model.parseDateInput('05062026', dePattern, inputNow), '2026-06-05')
+assert.equal(model.parseDateInput('2026-06-05', 'yyyy-MM-dd', inputNow), '2026-06-05')
+assert.equal(model.parseDateInput('31.02.2026', dePattern, inputNow), '')
+assert.equal(model.parseDateInput('13.13.2026', dePattern, inputNow), '')
+assert.equal(model.parseDateInput('1.2.200', dePattern, inputNow), '')
+assert.equal(model.parseDateInput('5.6.2026x', dePattern, inputNow), '')
+assert.equal(model.parseDateInput('abc', dePattern, inputNow), '')
+assert.equal(model.parseDateInput('', dePattern, inputNow), '')
+assert.equal(model.formatDateInput('2026-06-05', dePattern), '05.06.2026')
+assert.equal(model.formatDateInput('', dePattern), '')
+for (const key of ['2026-06-05', '2028-02-29']) {
+  assert.equal(model.parseDateInput(model.formatDateInput(key, dePattern), dePattern, inputNow), key)
+}
+// locale patterns from Qt's short format: two-digit years, unpadded fields, other orders
+for (const [pattern, text] of [['M/d/yy', '6/5/26'], ['dd/MM/yy', '05/06/26'], ['yyyy-MM-dd', '2026-06-05'], ['d. M. yyyy', '5. 6. 2026']]) {
+  assert.equal(model.formatDateInput('2026-06-05', pattern), text)
+  assert.equal(model.parseDateInput(text, pattern, inputNow), '2026-06-05')
+}
+assert.equal(model.parseDateInput('13/6/26', 'M/d/yy', inputNow), '')
+console.log('ok - typed date input')
+
+// packWideColumns
+const [a, b, c] = ['a', 'b', 'c']
+assert.deepEqual(model.packWideColumns([], [], 100, 4, 5, false), { status: 'ok', pages: [] })
+assert.deepEqual(model.packWideColumns([a, b, c], [10, 10, 10], 100, 4, 5, false), { status: 'ok', pages: [[a, b, c]] })
+// 44px per 40px row with a 100px budget: two rows per column
+assert.deepEqual(model.packWideColumns([a, b, c], [40, 40, 40], 100, 4, 5, false), { status: 'ok', pages: [[a, b], [c]] })
+// the column cap stops packing early and drops the overflow
+assert.deepEqual(model.packWideColumns([a, b, c], [40, 40, 40], 100, 4, 1, false), { status: 'ok', pages: [[a, b]] })
+// an unlaid-out measured row waits for the next height change
+assert.deepEqual(model.packWideColumns([a, b], [10, 0], 100, 4, 5, true), { status: 'pending' })
+// unmeasured rows ask for more measuring while there is room to grow
+assert.deepEqual(model.packWideColumns([a, b, c], [10], 100, 4, 5, true), { status: 'grow' })
+assert.deepEqual(model.packWideColumns([a, b, c], [10], 100, 4, 5, false), { status: 'ok', pages: [[a]] })
+console.log('ok - wide column packing')

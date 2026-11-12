@@ -31,10 +31,22 @@ Item {
   property string tasksLastSyncText: "Never synced"
   property int tasksGeneration: 0
   property int tasksLiveToken: 0
-  property int tasksCacheToken: 0
   property int tasksCacheRev: 0
   property bool tasksIgnoreCache: false
-  property string tasksPendingCreateId: ""
+  property bool tasksSyncedOnce: false
+  property bool tasksRerunRequested: false
+  property int tasksSyncCompletions: 0
+  property int tasksCacheStartSyncs: 0
+  // Optimistic creates: FIFO of { seq, pendingId, optimistic, secret, command }.
+  property var createQueue: []
+  property int createSeq: 0
+  property int createActiveSeq: 0
+  readonly property string calendarCacheDir: {
+    var override = String(Quickshell.env("OMARCHY_CALENDAR_CACHE") || "")
+    if (override !== "") return override
+    var home = String(Quickshell.env("HOME") || "")
+    return home !== "" ? home + "/.local/share/omarchy-calendar" : ""
+  }
   property var tasksPendingUpdateOriginal: null
   property string pendingDeleteUid: ""
   property string moduleName: "dev.enkeli.omarchy-dav-tasks"
@@ -142,7 +154,7 @@ Item {
   // ===== Tasks =====
 
   function tasksMutationBusy() {
-    return tasksCreateProc.running || tasksUpdateProc.running || tasksDeleteProc.running
+    return tasksCreateProc.running || tasksUpdateProc.running || tasksEditProc.running || tasksDeleteProc.running
   }
 
   function listTasks(forceSync) {
@@ -150,14 +162,13 @@ Item {
     debugLog("listTasks called, cachedTasks.length: " + cachedTasks.length + " forceSync: " + forceSync)
     tasksGeneration += 1
     tasksErrorMessage = ""
-    if (cachedTasks.length > 0) {
-      debugLog("applying cached tasks: " + cachedTasks.length)
-      applyTaskCache(cachedTasks, cachedCalendars)
-      tasksStatus = "ready"
-    }
+    // The disk cache is read in-process by FileView, so there is no helper
+    // spawn in front of the list.
     readTasksCache()
     var stale = !isNaN(tasksLastSyncAt.getTime()) && (Date.now() - tasksLastSyncAt.getTime() > 15 * 60 * 1000)
-    var shouldSync = forceSync === true || (cachedTasks.length === 0 && !tasksListProc.running) || stale
+    // The first open after shell start always syncs once, even with a warm
+    // cache, so the cached view is not left stale.
+    var shouldSync = forceSync === true || !tasksSyncedOnce || cachedTasks.length === 0 || stale
     debugLog("shouldSync: " + shouldSync + " stale: " + stale)
     if (shouldSync) startTasksLiveSync(false)
   }
@@ -165,9 +176,10 @@ Item {
   function startTasksLiveSync(ifChanged) {
     debugLog("startTasksLiveSync ifChanged: " + ifChanged)
     if (tasksListProc.running) {
-      debugLog("startTasksLiveSync - already running, incrementing token")
-      tasksLiveToken += 1
-      tasksListProc.token = -1
+      // The fetch in flight may predate a change that just landed, so it is
+      // discarded on arrival and one fresh fetch runs after it.
+      debugLog("startTasksLiveSync - already running, queueing a rerun")
+      tasksRerunRequested = true
       return
     }
     tasksLiveToken += 1
@@ -183,15 +195,16 @@ Item {
   }
 
   function applyTaskCache(tasks, cals) {
-    debugLog("applyTaskCache tasks: " + (tasks ? tasks.length : 0) + " cals: " + (cals ? cals.length : 0))
-    root.cachedTasks = tasks
+    var list = withInflightCreates(tasks || [])
+    debugLog("applyTaskCache tasks: " + list.length + " cals: " + (cals ? cals.length : 0))
+    root.cachedTasks = list
     if (cals && cals.length > 0) {
       root.cachedCalendars = cals
       root.calendars = root.cachedCalendars
     }
-    root.allTasks = tasks
-    root.pendingTasks = tasks.filter(function(task) { return TaskModel.isPending(task) })
-    root.doneTasks = tasks.filter(function(task) { return TaskModel.isCompleted(task) })
+    root.allTasks = list
+    root.pendingTasks = list.filter(function(task) { return TaskModel.isPending(task) })
+    root.doneTasks = list.filter(function(task) { return TaskModel.isCompleted(task) })
     debugLog("applyTaskCache result - allTasks: " + root.allTasks.length + " pending: " + root.pendingTasks.length + " done: " + root.doneTasks.length)
     root.tasksStatus = "ready"
     root.tasksErrorMessage = ""
@@ -203,16 +216,28 @@ Item {
     }
   }
 
+  // Optimistic creates that are still queued or running stay visible across
+  // any list refresh that lands while they are in flight.
+  function withInflightCreates(tasks) {
+    if (createQueue.length === 0) return tasks
+    var out = tasks.slice()
+    var seen = {}
+    for (var i = 0; i < out.length; i++) if (out[i]) seen[out[i].id] = true
+    for (var j = 0; j < createQueue.length; j++) {
+      var optimistic = createQueue[j].optimistic
+      if (!seen[optimistic.id]) out.push(optimistic)
+    }
+    return out
+  }
+
   function readTasksCache() {
-    if (tasksCacheProc.running || tasksMutationBusy()) {
-      debugLog("readTasksCache skipped - already running or mutating")
+    if (tasksMutationBusy()) {
+      debugLog("readTasksCache skipped - mutating")
       return
     }
     debugLog("readTasksCache starting")
-    tasksCacheProc.token = tasksCacheToken
-    tasksCacheProc.command = [helperPath(), "list-tasks", "--from-cache", "--provider", provider]
-    if (calendarId) tasksCacheProc.command.push("--calendar-id", calendarId)
-    tasksCacheProc.running = true
+    tasksCacheStartSyncs = tasksSyncCompletions
+    tasksCacheFile.reload()
   }
 
   function writeCache() {
@@ -236,8 +261,10 @@ Item {
       debugLog("finishListCache skipped - ignoreCache or mutating")
       return
     }
-    if (tasksCacheProc.token !== root.tasksCacheToken) {
-      debugLog("finishListCache skipped - token mismatch")
+    // A sync that finished after this read started is newer than the disk
+    // copy; applying the disk copy would roll the list back.
+    if (tasksCacheStartSyncs !== tasksSyncCompletions) {
+      debugLog("finishListCache skipped - a sync completed meanwhile")
       return
     }
     var payload = TaskModel.parseHelperResponse(text)
@@ -256,6 +283,8 @@ Item {
     debugLog("finishListTasks payload.ok: " + payload.ok + " tasks: " + (payload.tasks ? payload.tasks.length : 0))
     if (exitCode === 0 && payload.ok) {
       tasksIgnoreCache = false
+      tasksSyncedOnce = true
+      tasksSyncCompletions += 1
       applyTaskCache(payload.tasks, payload.calendars)
       writeCache()
     } else if (cachedTasks.length === 0) {
@@ -265,17 +294,21 @@ Item {
     }
   }
 
-  function createTask(calendarIdArg, title, due, priority, description, categories) {
+  // The new task appears in the list at once. Creates run through a FIFO
+  // queue (one helper process at a time), so rapid submits never cancel each
+  // other and each keeps its own pending entry until the helper confirms it.
+  function createTask(calendarIdArg, title, due, priority, description, categories, dtstart) {
     debugLog("action: create-task calendar=" + calendarIdArg + " title=" + title)
     var targetCalendar = String(calendarIdArg || calendarId || defaultCalendarId())
     tasksErrorMessage = ""
-    if (tasksCreateProc.running) tasksCreateProc.running = false
-    tasksPendingCreateId = "omarchy-task-pending-" + Date.now()
+    createSeq += 1
+    var pendingId = "omarchy-task-pending-" + createSeq + "-" + Date.now()
     var optimistic = TaskModel.normalizedTask({
-      id: tasksPendingCreateId,
-      uid: tasksPendingCreateId,
+      id: pendingId,
+      uid: pendingId,
       title: title,
       due: due || "",
+      start: dtstart || "",
       status: "NEEDS-ACTION",
       priority: priority || "",
       description: description || "",
@@ -284,50 +317,76 @@ Item {
       calendarName: calendarNameById(targetCalendar)
     })
     optimistic._pending = true
-    var next = cachedTasks.slice()
-    next.push(optimistic)
-    applyTaskCache(next, cachedCalendars)
-    // Create owns its status values ("adding" / "added") so the panel banner
-    // can show create-specific text while update/delete keep "saving". Set
-    // after applyTaskCache, which optimistically resets the status to "ready".
-    tasksStatus = "adding"
     // Task content is private: it travels on the helper's stdin (written by
-    // tasksCreateProc.onStarted) so titles, due dates, descriptions, and
+    // tasksCreateProc.onStarted) so titles, dates, descriptions, and
     // categories never appear in /proc/<pid>/cmdline or process listings.
-    tasksCreateProc.secret = JSON.stringify({
+    var secret = JSON.stringify({
       title: String(title || "(No title)"),
       due: String(due || ""),
+      dtstart: String(dtstart || ""),
       priority: (priority !== undefined && priority !== null && String(priority) !== "") ? String(priority) : null,
       description: description ? String(description) : "",
       categories: Array.isArray(categories) ? categories.map(function(category) { return String(category) }) : []
     })
-    tasksCreateProc.command = [
-      helperPath(), "create-task",
-      "--provider", calendarProviderById(targetCalendar),
-      "--calendar-id", targetCalendar
-    ]
+    createQueue = createQueue.concat([{
+      seq: createSeq,
+      pendingId: pendingId,
+      optimistic: optimistic,
+      secret: secret,
+      command: [
+        helperPath(), "create-task",
+        "--provider", calendarProviderById(targetCalendar),
+        "--calendar-id", targetCalendar
+      ]
+    }])
+    applyTaskCache(cachedTasks, cachedCalendars)
+    tasksStatus = "adding"
+    if (!tasksCreateProc.running) startNextCreate()
+  }
+
+  function startNextCreate() {
+    if (createQueue.length === 0) return
+    var job = createQueue[0]
+    createActiveSeq = job.seq
+    tasksStatus = "adding"
+    tasksCreateProc.token = job.seq
+    tasksCreateProc.secret = job.secret
+    job.secret = ""
+    tasksCreateProc.command = job.command
+    // onStarted closes stdin after writing, so re-open it for every run.
+    tasksCreateProc.stdinEnabled = true
+    createTimeout.restart()
     tasksCreateProc.running = true
   }
 
   function finishCreateTask(text, exitCode) {
+    createTimeout.stop()
+    var job = createQueue.length > 0 ? createQueue[0] : null
+    createQueue = createQueue.slice(1)
+    createActiveSeq = 0
+    var pendingId = job ? job.pendingId : ""
     var payload = TaskModel.parseHelperResponse(text)
     if (exitCode === 0 && payload.ok) {
-      removePendingTask(root.tasksPendingCreateId)
-      if (payload.tasks && payload.tasks.length > 0) {
-        mergeTask(payload.tasks[0])
-        root.taskCreated(payload.tasks[0])
-      }
-      root.tasksStatus = "added"
+      removePendingTask(pendingId)
+      var created = payload.tasks && payload.tasks.length > 0 ? payload.tasks[0] : null
+      if (created) mergeTask(created)
+      root.taskCreated(created || {})
       root.tasksErrorMessage = ""
-      root.startTasksLiveSync(true)
-      taskAddedTimer.restart()
+      if (createQueue.length === 0) {
+        root.tasksStatus = "added"
+        taskAddedTimer.restart()
+      }
     } else {
-      removePendingTask(root.tasksPendingCreateId)
+      removePendingTask(pendingId)
       root.tasksStatus = "error"
       root.tasksErrorMessage = root.failMessage(payload, "Could not create task.")
-      root.taskCreateFailed(root.cleanHelperErrorText((payload && payload.error && payload.error.message) || tasksCreateErr.text, "Could not create task."))
+      root.taskCreateFailed(root.cleanHelperErrorText((payload && payload.error && payload.error.message) || "", "Could not create task."))
     }
-    root.tasksPendingCreateId = ""
+    if (createQueue.length > 0) {
+      startNextCreate()
+    } else {
+      root.startTasksLiveSync(true)
+    }
   }
 
   function updateTask(task, statusArg, percentComplete) {
@@ -355,10 +414,52 @@ Item {
     tasksUpdateProc.running = true
   }
 
+  // Edit title, description, due date (YYYY-MM-DD, "" clears) and categories
+  // of an existing task. `fields` carries only what changed. Content travels
+  // on the helper's stdin like create-task, never in argv.
+  function editTask(task, fields) {
+    debugLog("action: edit-task uid=" + (task ? task.uid : "") + " fields=" + Object.keys(fields || {}).join(","))
+    if (!task || !task.uid || task._pending || !fields) return false
+    tasksStatus = "saving"
+    tasksErrorMessage = ""
+    if (tasksEditProc.running) tasksEditProc.running = false
+    tasksPendingUpdateOriginal = task
+    var next = TaskModel.normalizedTask(task)
+    var payload = {}
+    if (fields.title !== undefined) { payload.title = String(fields.title); next.title = payload.title }
+    if (fields.description !== undefined) { payload.description = String(fields.description); next.description = payload.description }
+    if (fields.due !== undefined) { payload.due = String(fields.due); next.due = payload.due }
+    if (fields.dtstart !== undefined) { payload.dtstart = String(fields.dtstart); next.start = payload.dtstart }
+    if (fields.categories !== undefined) {
+      payload.categories = Array.isArray(fields.categories) ? fields.categories.map(function(category) { return String(category) }) : []
+      next.categories = payload.categories.slice()
+    }
+    next._pending = true
+    mergeTask(next)
+    tasksEditProc.secret = JSON.stringify(payload)
+    // onStarted closes stdin after writing, so re-open it for every run.
+    tasksEditProc.stdinEnabled = true
+    // A calendar change is sent as --to-calendar-id; the helper copies the task
+    // there and deletes the original.
+    var toCalendarId = fields.calendarId !== undefined ? String(fields.calendarId) : ""
+    tasksEditProc.command = [
+      helperPath(), "edit-task",
+      "--provider", calendarProviderById(task.calendarId),
+      "--calendar-id", String(task.calendarId || defaultCalendarId()),
+      "--to-calendar-id", toCalendarId,
+      "--uid", String(task.uid || "")
+    ]
+    tasksEditProc.running = true
+    return true
+  }
+
   function finishUpdateTask(text, exitCode) {
     var payload = TaskModel.parseHelperResponse(text)
     if (exitCode === 0 && payload.ok) {
       if (payload.tasks && payload.tasks.length > 0) {
+        // A move gives the task a new UID: drop the original entry first.
+        var original = root.tasksPendingUpdateOriginal
+        if (original && original.uid !== payload.tasks[0].uid) removeTaskByUid(original.uid)
         mergeTask(payload.tasks[0])
         root.taskUpdated(payload.tasks[0])
       }
@@ -599,22 +700,23 @@ Item {
         root.listTasksTimeout.stop()
         return
       }
+      if (root.tasksRerunRequested) {
+        // A change landed while this fetch ran: its result may predate it.
+        root.tasksRerunRequested = false
+        root.startTasksLiveSync(false)
+        return
+      }
       root.finishListTasks(root.helperText(tasksListOut.text, tasksListErr.text), exitCode)
     }
   }
 
-  Process {
-    id: tasksCacheProc
-    property int token: 0
-    running: false
-
-    stdout: StdioCollector { id: tasksCacheOut; waitForEnd: true }
-    stderr: StdioCollector { id: tasksCacheErr; waitForEnd: true }
-
-    onExited: function(exitCode) {
-      debugLog("tasksCacheProc exited with code: " + exitCode)
-      root.finishListCache(root.helperText(tasksCacheOut.text, tasksCacheErr.text), exitCode)
-    }
+  // The tasks cache is read in-process: no helper spawn before the list shows.
+  FileView {
+    id: tasksCacheFile
+    path: root.calendarCacheDir !== "" ? root.calendarCacheDir + "/tasks-cache.json" : ""
+    printErrors: false
+    onLoaded: root.finishListCache(text(), 0)
+    onLoadFailed: function(error) { root.finishListCache("", 1) }
   }
 
   Process {
@@ -651,6 +753,7 @@ Item {
   Process {
     id: tasksCreateProc
     property string secret: ""
+    property int token: 0
     running: false
     stdinEnabled: true
     onStarted: {
@@ -663,6 +766,8 @@ Item {
     stderr: StdioCollector { id: tasksCreateErr; waitForEnd: true }
 
     onExited: function(exitCode) {
+      // Ignore exits from a job that already timed out and was dropped.
+      if (token !== root.createActiveSeq) return
       root.finishCreateTask(root.helperText(tasksCreateOut.text, tasksCreateErr.text), exitCode)
     }
   }
@@ -676,6 +781,25 @@ Item {
 
     onExited: function(exitCode) {
       root.finishUpdateTask(root.helperText(tasksUpdateOut.text, tasksUpdateErr.text), exitCode)
+    }
+  }
+
+  Process {
+    id: tasksEditProc
+    property string secret: ""
+    running: false
+    stdinEnabled: true
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+      stdinEnabled = false
+    }
+
+    stdout: StdioCollector { id: tasksEditOut; waitForEnd: true }
+    stderr: StdioCollector { id: tasksEditErr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      root.finishUpdateTask(root.helperText(tasksEditOut.text, tasksEditErr.text), exitCode)
     }
   }
 
@@ -778,6 +902,20 @@ Item {
     interval: 2000
     repeat: false
     onTriggered: if (root.tasksStatus === "added") root.tasksStatus = "ready"
+  }
+
+  // A hung create helper must not block the queue forever.
+  Timer {
+    id: createTimeout
+    interval: 60000
+    repeat: false
+    onTriggered: {
+      if (!tasksCreateProc.running) return
+      debugLog("create-task timed out")
+      root.createActiveSeq = 0
+      tasksCreateProc.running = false
+      root.finishCreateTask(JSON.stringify({ ok: false, error: { message: "Create timed out. Try again." } }), 1)
+    }
   }
 
   Timer {

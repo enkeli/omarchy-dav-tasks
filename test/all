@@ -6,8 +6,11 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash "$ROOT/test/helper-test.sh"
 bash "$ROOT/test/qml-test.sh"
+python3 "$ROOT/test/edit-task-test.py"
 python3 "$ROOT/test/caldav-harness.py"
 bash "$ROOT/test/write-test.sh"
 node "$ROOT/test/task-model-test.js"
+node "$ROOT/test/keybindings-test.js"
+python3 "$ROOT/test/demo-calendars-test.py"
 
 echo "ok - all tests"

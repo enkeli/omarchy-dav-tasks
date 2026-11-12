@@ -4,6 +4,7 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 import "TaskModel.js" as TaskModel
+import "Keybindings.js" as Keybindings
 
 Panel {
   id: root
@@ -166,6 +167,94 @@ Panel {
       calendarService.ensureRightAnchor()
   }
 
+  // --- Keyboard ---------------------------------------------------------
+
+  // Rebindings saved in this widget's shell.json entry (action id -> keys).
+  readonly property var shortcutOverrides: root.settings && root.settings.keyboardShortcuts
+    && typeof root.settings.keyboardShortcuts === "object" ? root.settings.keyboardShortcuts : ({})
+
+  function saveShortcutOverrides(next) {
+    root.persistSettings({ keyboardShortcuts: next })
+  }
+
+  function openHelp() {
+    debugLog("action: open keyboard help")
+    helpOverlay.open()
+  }
+
+  // Scroll the content so `item` is fully visible (or its top, when taller
+  // than the viewport).
+  function revealItem(item) {
+    if (!item || !calendarScroll) return
+    var pad = Style.space(8)
+    var top = item.mapToItem(calendarScroll.contentItem, 0, 0).y
+    var bottom = top + item.height
+    var maxScroll = Math.max(0, calendarScroll.contentHeight - calendarScroll.height)
+    var y = calendarScroll.contentY
+    if (item.height + pad * 2 > calendarScroll.height || top - pad < y) y = top - pad
+    else if (bottom + pad > y + calendarScroll.height) y = bottom + pad - calendarScroll.height
+    calendarScroll.contentY = Math.max(0, Math.min(y, maxScroll))
+  }
+
+  // Footer legend for the current context, built from the live bindings so
+  // it follows rebinding. Entries starting with "=" are literal fixed keys.
+  function hintText() {
+    var specs = {
+      list: [[["cursorDown", "cursorUp"], "move"], [["toggleComplete"], "done"], [["editTask"], "edit"], [["toggleExpand"], "details"], [["deleteTask"], "delete"], [["addTask"], "new"], [["filter"], "filter"], [["help"], "all keys"]],
+      config: [[["cursorDown", "cursorUp"], "move"], [["configActivate"], "toggle"], [["configColor"], "color"], [["connectServer"], "connect"], [["help"], "all keys"]],
+      form: [[["=Tab"], "next field"], [["formSubmit"], tasksViewRoot.editingTask ? "save" : "create"], [["formPickDue"], "due date"], [["formCalendarNext", "formCalendarPrev"], "calendar"], [["=Esc"], "back"], [["help"], "all keys"]],
+      picker: [[["pickerLeft", "pickerDown", "pickerUp", "pickerRight"], "move"], [["pickerPrevMonth", "pickerNextMonth"], "month"], [["pickerSelect"], "choose"], [["pickerClear"], "clear"], [["=Esc"], "close"]],
+      palette: [[["palettePrev", "paletteNext"], "move"], [["paletteSelect"], "choose"], [["=Esc"], "close"]]
+    }
+    var spec = specs[tasksViewRoot.keyContext] || specs.list
+    var parts = []
+    for (var i = 0; i < spec.length; i++) {
+      var keys = []
+      for (var j = 0; j < spec[i][0].length; j++) {
+        var id = spec[i][0][j]
+        var key = id.charAt(0) === "=" ? id.substring(1) : Keybindings.primaryShortcut(id, root.shortcutOverrides)
+        if (key) keys.push(key)
+      }
+      if (keys.length > 0) parts.push(keys.join("/") + " " + spec[i][1])
+    }
+    return parts.join("  ·  ")
+  }
+
+  readonly property Item keyCatcherItem: keyCatcher
+
+  // Single entry point for every key press while the panel is open.
+  function handleKey(event) {
+    if (helpOverlay.opened || tasksViewRoot.modalBlocked) return
+    var editing = tasksViewRoot.textEditing
+    if (event.key === Qt.Key_Escape) {
+      if (!tasksViewRoot.handleEscape()) root.close()
+      event.accepted = true
+      return
+    }
+    if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+      var direction = (event.modifiers & Qt.ShiftModifier) || event.key === Qt.Key_Backtab ? -1 : 1
+      if (tasksViewRoot.activeTab === "add") {
+        tasksViewRoot.formStep(direction)
+        event.accepted = true
+      } else if (!editing) {
+        // Everywhere else Tab keeps its shell job: hop to the next bar panel.
+        root.switchPanel(direction)
+        event.accepted = true
+      }
+      return
+    }
+    var hit = Keybindings.resolve({
+      key: event.key,
+      text: event.text,
+      ctrl: (event.modifiers & Qt.ControlModifier) !== 0,
+      alt: (event.modifiers & Qt.AltModifier) !== 0,
+      meta: (event.modifiers & Qt.MetaModifier) !== 0,
+      shift: (event.modifiers & Qt.ShiftModifier) !== 0,
+      isComposing: event.isComposing === true
+    }, tasksViewRoot.keyContext, { overrides: root.shortcutOverrides, editing: editing })
+    if (hit.id && tasksViewRoot.performAction(hit.id)) event.accepted = true
+  }
+
   // Give keyboard focus back to the panel cursor after an inline editor
   // (add-task fields, date picker) releases it.
   function focusKeyCatcher() {
@@ -187,7 +276,7 @@ Panel {
     open: root.opened
     centerOnBar: false
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(560))
+    contentWidth: panel.fittedContentWidth(tasksViewRoot.wideMode && panel.availableCardWidth > 0 ? panel.availableCardWidth : Style.space(560))
     // Fixed content height: the frame stays stable across tabs, pages, and
     // expanded rows. 560 fits the pending tab's worst common case at the
     // default scale — tab row + two sections, each reserving a full page of
@@ -197,27 +286,48 @@ Panel {
     // with its due picker) scrolls inside the Flickable below.
     contentHeight: panel.fittedContentHeight(Style.space(560))
 
-    PanelKeyCatcher {
+    // Replaces the shell's fixed-key PanelKeyCatcher: every key is resolved
+    // through Keybindings.js (rebindable, context aware). BeforeItem priority
+    // runs it ahead of focused descendants; handleKey() lets plain keys fall
+    // through to text fields while one has focus.
+    Item {
       id: keyCatcher
       anchors.fill: parent
-      // While the add-task form owns the keyboard (text fields, calendar
-      // dropdown popup, due-date picker) the panel cursor must stand down
-      // so typing reaches the fields — same contract as the shell panels.
-      blocked: tasksViewRoot.formEditing
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
-      // Keyboard scrolling for overflow (arrows / hjkl), one task row plus
-      // its spacing per press — same contract as the agents panel. No-op
-      // while the add form owns keys: `blocked` short-circuits this catcher.
-      onMoveRequested: function(dx, dy) {
-        if (dy === 0) return
-        var maxScroll = Math.max(0, calendarScroll.contentHeight - calendarScroll.height)
-        calendarScroll.contentY = Math.max(0, Math.min(calendarScroll.contentY + dy * Style.space(40), maxScroll))
+      focus: true
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) { root.handleKey(event) }
+
+      Text {
+        id: keyHint
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+        text: root.hintText()
+        color: Color.muted
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.caption
+        textFormat: Text.PlainText
+      }
+
+      ShortcutHelp {
+        id: helpOverlay
+        contextName: tasksViewRoot.keyContext
+        overrides: root.shortcutOverrides
+        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        onTriggered: function(actionId) { tasksViewRoot.performAction(actionId) }
+        onOverridesEdited: function(next) { root.saveShortcutOverrides(next) }
+        onClosed: root.focusKeyCatcher()
       }
 
       Flickable {
         id: calendarScroll
-        anchors.fill: parent
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: keyHint.top
+        anchors.bottomMargin: Style.space(4)
         contentWidth: width
         contentHeight: contentWrap.height
         clip: true
@@ -236,7 +346,7 @@ Panel {
 
           Column {
             id: calendarColumn
-            width: Math.min(parent.width, Style.space(520))
+            width: tasksViewRoot.wideMode ? parent.width : Math.min(parent.width, Style.space(520))
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(12)
 
@@ -284,6 +394,13 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
                 Button {
+                  id: wideButton
+                  visible: tasksViewRoot.activeTab === "pending"
+                  iconText: "\uf065"
+                  tooltipText: tasksViewRoot.wideMode ? "Normal width (F11)" : "Wide view: more columns (F11)"
+                  onClicked: tasksViewRoot.toggleWide()
+                }
+                Button {
                   id: addTaskButton
                   text: "Add Task"
                   iconText: "\uf067"
@@ -306,6 +423,10 @@ Panel {
                   }
                 }
                 ViewButton {
+                  text: "?"
+                  onClicked: root.openHelp()
+                }
+                ViewButton {
                   text: "󰒓"
                   selected: tasksViewRoot.activeTab === "config"
                   onClicked: {
@@ -324,6 +445,7 @@ Panel {
               panel: root
               viewMode: root.viewMode
               opened: root.opened
+              viewport: calendarScroll
               // Tabs swap whole content blocks; start each one at the top
               // instead of inheriting the previous tab's scroll offset.
               onActiveTabChanged: calendarScroll.contentY = 0

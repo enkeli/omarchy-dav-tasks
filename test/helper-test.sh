@@ -18,6 +18,19 @@ renamed="$($ROOT/helper/omarchy-calendar-helper snapshot --from-cache --provider
 jq -e '.ok == true and (.calendars[] | select(.id == "personal") | .name == "Home" and .color == "#f38ba8")' <<<"$renamed" >/dev/null
 echo "ok - helper calendar rename and color"
 
+shell_cfg="$(mktemp)"
+printf '{"bar":{"layout":{"left":[{"id":"dev.enkeli.omarchy-dav-tasks"}],"right":[{"id":"omarchy.clock"}]}}}' >"$shell_cfg"
+anchor="$(OMARCHY_SHELL_CONFIG="$shell_cfg" "$ROOT/helper/omarchy-calendar-helper" ensure-right-anchor --title dev.enkeli.omarchy-dav-tasks 2>/dev/null)"
+jq -e '.ok == true and .changed == false' <<<"$anchor" >/dev/null
+jq -e '[.bar.layout.right[].id] == ["omarchy.clock"]' "$shell_cfg" >/dev/null
+echo "ok - helper keeps a widget placed on the left instead of duplicating it"
+printf '{"bar":{"layout":{"left":[],"right":[{"id":"omarchy.clock"}]}}}' >"$shell_cfg"
+anchor="$(OMARCHY_SHELL_CONFIG="$shell_cfg" "$ROOT/helper/omarchy-calendar-helper" ensure-right-anchor --title dev.enkeli.omarchy-dav-tasks 2>/dev/null)"
+jq -e '.ok == true and .changed == true' <<<"$anchor" >/dev/null
+jq -e '[.bar.layout.right[].id] == ["omarchy.clock","dev.enkeli.omarchy-dav-tasks"]' "$shell_cfg" >/dev/null
+rm -f "$shell_cfg"
+echo "ok - helper adds the widget to the right when it is placed nowhere"
+
 if eds_payload="$($ROOT/helper/omarchy-calendar-helper list-calendars --provider evolution-data-server 2>/dev/null)"; then
   jq -e '.ok == true and .provider == "evolution-data-server" and (.calendars | type) == "array"' <<<"$eds_payload" >/dev/null
   echo "ok - helper EDS calendar listing"
